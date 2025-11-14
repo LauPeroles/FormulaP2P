@@ -201,10 +201,10 @@ APP_CSS = f"""
 
 # --- 1. PROCESAMIENTO DE DATOS (¡OPTIMIZADO!) ---
 
-def cargar_datos_crudos(days_to_load=30):
+def cargar_datos_crudos(days_to_load=7):
     """
     Carga datos desde PostgreSQL, limitando el histórico para ahorrar RAM.
-    Por defecto, carga los últimos 30 días.
+    Por defecto, carga los últimos 7 días.
     """
     if ENGINE is None:
         return pd.DataFrame(), pd.DataFrame()
@@ -793,3 +793,4 @@ def actualizar_graficos(tab_value, interval_value, relayout_data):
     texto_fecha = crear_texto_rango_fechas(fecha_inicio, fecha_fin)
     
     return fig_principal, fig_premium, fig_flujo, fig_tendencia, texto_fecha
+
