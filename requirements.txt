@@ -1,0 +1,7 @@
+pandas
+sqlalchemy
+requests
+dash
+plotly
+gunicorn
+psycopg2-binary
