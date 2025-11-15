@@ -4,11 +4,12 @@ from plotly.subplots import make_subplots
 # --- IMPORTACIONES CORREGIDAS ---
 from dash import Dash, html, dcc, callback_context, Input, Output, State
 import datetime
-from dash.exceptions import PreventUpdate # <-- ESTA ES LA CORRECCIÓN
+from dash.exceptions import PreventUpdate # <-- CORRECCIÓN DE IMPORTACIÓN
 # --- FIN DE CORRECCIONES ---
-from sqlalchemy import create_engine 
+from sqlalchzemy import create_engine 
 import os
-from dateutil.relativelayout import relativedelta 
+# --- IMPORTACIÓN QUE FALLABA (AHORA SE INSTALARÁ CON REQUIREMENTS) ---
+from dateutil.relativedelta import relativedelta 
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
@@ -220,6 +221,7 @@ def crear_datos_ohlc(df_raw, interval):
     if df_raw.empty: return pd.DataFrame(), pd.DataFrame()
     df_raw_indexed = df_raw.set_index('Timestamp')
     ohlcv_agg = {'Precio': 'ohlc', 'Volumen': 'sum'}
+    # Agregamos .dropna() aquí para evitar filas con NaN si un intervalo no tiene datos
     df_demanda = df_raw_indexed[df_raw_indexed['Tipo'] == 'Demanda'].resample(interval).agg(ohlcv_agg).dropna()
     df_demanda.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
     df_oferta = df_raw_indexed[df_raw_indexed['Tipo'] == 'Oferta'].resample(interval).agg(ohlcv_agg).dropna()
@@ -336,7 +338,7 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     return fig
 
 
-# --- 3. FUNCIONES AUXILIRES ---
+# --- 3. FUNCIONES AUXILIARES ---
 
 def obtener_rango_fechas_del_grafico(relayout_data, df_ohlc_actual):
     if relayout_data is None or 'xaxis.range[0]' not in relayout_data:
@@ -354,7 +356,7 @@ def crear_texto_rango_fechas(fecha_inicio, fecha_fin):
         html.Span("RANGO DE FECHA: ", style={'color': 'white', 'fontWeight': '400'}),
         html.Span(f"{fecha_inicio.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_COMPRA, 'fontWeight': '700'}),
         html.Span(" — ", style={'color': 'gray'}),
-        html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '700'})
+        html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '7G00'})
     ])
 
 # --- 4. INICIALIZACIÓN DE DASH ---
@@ -564,16 +566,28 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
     if trigger_id_prop == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
         fecha_inicio, fecha_fin = obtener_rango_fechas_del_grafico(relayout_data, df_demanda_ohlc)
     else:
-        if df_demanda_ohlc.empty: # Seguridad si el resample no da datos
+        if df_demanda_ohlc.empty and df_oferta_ohlc.empty: # Seguridad si el resample no da datos
              return (_crear_grafico_vacio(f"No hay datos para el intervalo {interval_value}"),) * 4 + (html.Span("Datos insuficientes..."),)
-        fecha_inicio, fecha_fin = df_demanda_ohlc.index.min(), df_demanda_ohlc.index.max()
+        
+        # Encontrar el rango total de ambos dataframes
+        min_d = df_demanda_ohlc.index.min() if not df_demanda_ohlc.empty else pd.Timestamp.max
+        min_o = df_oferta_ohlc.index.min() if not df_oferta_ohlc.empty else pd.Timestamp.max
+        max_d = df_demanda_ohlc.index.max() if not df_demanda_ohlc.empty else pd.Timestamp.min
+        max_o = df_oferta_ohlc.index.max() if not df_oferta_ohlc.empty else pd.Timestamp.min
+        
+        fecha_inicio = min(min_d, min_o)
+        fecha_fin = max(max_d, max_o)
+        
+        if fecha_inicio == pd.Timestamp.max: # Si ambos están vacíos
+            return (_crear_grafico_vacio(f"No hay datos para el intervalo {interval_value}"),) * 4 + (html.Span("Datos insuficientes..."),)
+
 
     # 3. Crear el gráfico principal
     if trigger_id_prop == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
         fig_principal = PreventUpdate # No redibujar si solo fue zoom
     else:
         if tab_value == 'tab-velas':
-            fig_calle = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
+            fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-spread':
             fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-burbuja':
