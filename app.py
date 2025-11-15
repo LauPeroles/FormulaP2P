@@ -4,12 +4,11 @@ from plotly.subplots import make_subplots
 # --- IMPORTACIONES CORREGIDAS ---
 from dash import Dash, html, dcc, callback_context, Input, Output, State
 import datetime
-from dash.exceptions import PreventUpdate # <-- CORRECCIÓN DE IMPORTACIÓN
-# --- FIN DE CORRECCIONES ---
-from sqlalchzemy import create_engine 
+from dash.exceptions import PreventUpdate 
+# --- LÍNEA CORREGIDA (de 'sqlalchzemy') ---
+from sqlalchemy import create_engine 
 import os
-# --- IMPORTACIÓN QUE FALLABA (AHORA SE INSTALARÁ CON REQUIREMENTS) ---
-from dateutil.relativedelta import relativedelta 
+from dateutil.relativelayout import relativedelta 
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
@@ -321,11 +320,15 @@ def crear_grafico_flujo(df_metodos_expl, fecha_inicio, fecha_fin):
 def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     df_filtrado = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)]
     if df_filtrado.empty: return _crear_grafico_vacio()
-    duration_days = (fecha_fin - fecha_fin).days
-    if duration_days <= 0: interval, interval_label = '1H', "1 Hora" # Default for single day
-    elif duration_days <= 2: interval, interval_label = '1H', "1 Hora"
+    
+    # Manejo de deltas de tiempo
+    duration = fecha_fin - fecha_inicio
+    duration_days = duration.total_seconds() / (24 * 60 * 60) # Días como float
+    
+    if duration_days <= 2: interval, interval_label = '1H', "1 Hora"
     elif duration_days <= 14: interval, interval_label = '6H', "6 Horas"
     else: interval, interval_label = '1D', "1 Día"
+        
     top_metodos = df_filtrado.groupby('Metodos_Pago')['Volumen'].sum().nlargest(7).index
     df_filtrado['Metodo_Agrupado'] = df_filtrado['Metodos_Pago'].apply(lambda x: x if x in top_metodos else 'Otros')
     df_resampled = (df_filtrado.set_index('Timestamp').groupby('Metodo_Agrupado').resample(interval)['Volumen'].sum().unstack(level=0, fill_value=0))
@@ -356,7 +359,7 @@ def crear_texto_rango_fechas(fecha_inicio, fecha_fin):
         html.Span("RANGO DE FECHA: ", style={'color': 'white', 'fontWeight': '400'}),
         html.Span(f"{fecha_inicio.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_COMPRA, 'fontWeight': '700'}),
         html.Span(" — ", style={'color': 'gray'}),
-        html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '7G00'})
+        html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '700'})
     ])
 
 # --- 4. INICIALIZACIÓN DE DASH ---
@@ -416,8 +419,13 @@ def crear_layout():
         df_ohlc_demanda_global, df_ohlc_oferta_global = crear_datos_ohlc(df_raw_global, DEFAULT_INTERVAL)
         figura_principal_inicial = crear_figura_velas(df_ohlc_demanda_global, df_ohlc_oferta_global, DEFAULT_INTERVAL)
         
-        if not df_ohlc_demanda_global.empty:
-            fecha_inicio_inicial, fecha_fin_inicial = (df_ohlc_demanda_global.index.min(), df_ohlc_demanda_global.index.max())
+        if not df_ohlc_demanda_global.empty or not df_ohlc_oferta_global.empty:
+            min_d = df_demanda_global.index.min() if not df_demanda_global.empty else pd.Timestamp.max
+            min_o = df_ohlc_oferta_global.index.min() if not df_ohlc_oferta_global.empty else pd.Timestamp.max
+            max_d = df_demanda_global.index.max() if not df_demanda_global.empty else pd.Timestamp.min
+            max_o = df_ohlc_oferta_global.index.max() if not df_ohlc_oferta_global.empty else pd.Timestamp.min
+            fecha_inicio_inicial = min(min_d, min_o)
+            fecha_fin_inicial = max(max_d, max_o)
         else:
             fecha_inicio_inicial, fecha_fin_inicial = datetime.datetime.now(), datetime.datetime.now()
             
