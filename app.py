@@ -1,14 +1,14 @@
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# --- LÍNEA CORREGIDA ---
+# --- IMPORTACIONES CORREGIDAS ---
 from dash import Dash, html, dcc, callback_context, Input, Output, State
 import datetime
-# --- LÍNEA CORREGIDA ---
-from dash.exceptions import PreventUpdate
+from dash.exceptions import PreventUpdate # <-- ESTA ES LA CORRECCIÓN
+# --- FIN DE CORRECCIONES ---
 from sqlalchemy import create_engine 
 import os
-from dateutil.relativedelta import relativedelta 
+from dateutil.relativelayout import relativedelta 
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
@@ -161,7 +161,6 @@ def cargar_datos_crudos(days_to_load=DAYS_TO_LOAD):
         start_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
 
         # Fallback para el nombre de la exchange si la columna no existe
-        # Intentamos leer la columna, si falla, reintentamos sin ella.
         exchange_name = "P2P"
         df_raw = pd.DataFrame()
         
@@ -320,8 +319,9 @@ def crear_grafico_flujo(df_metodos_expl, fecha_inicio, fecha_fin):
 def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     df_filtrado = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)]
     if df_filtrado.empty: return _crear_grafico_vacio()
-    duration_days = (fecha_fin - fecha_inicio).days
-    if duration_days <= 2: interval, interval_label = '1H', "1 Hora"
+    duration_days = (fecha_fin - fecha_fin).days
+    if duration_days <= 0: interval, interval_label = '1H', "1 Hora" # Default for single day
+    elif duration_days <= 2: interval, interval_label = '1H', "1 Hora"
     elif duration_days <= 14: interval, interval_label = '6H', "6 Horas"
     else: interval, interval_label = '1D', "1 Día"
     top_metodos = df_filtrado.groupby('Metodos_Pago')['Volumen'].sum().nlargest(7).index
@@ -336,7 +336,7 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     return fig
 
 
-# --- 3. FUNCIONES AUXILIARES ---
+# --- 3. FUNCIONES AUXILIRES ---
 
 def obtener_rango_fechas_del_grafico(relayout_data, df_ohlc_actual):
     if relayout_data is None or 'xaxis.range[0]' not in relayout_data:
@@ -386,6 +386,7 @@ app.index_string = f'''
 # --- 5. LAYOUT DE LA APLICACIÓN ---
 def crear_layout():
     # Carga inicial de datos (puede estar vacía al principio)
+    # Esta carga inicial es la que consume RAM al arrancar.
     df_raw_global, df_metodos_expl_global, exchange_name_global = cargar_datos_crudos(days_to_load=DAYS_TO_LOAD) 
     
     # Título dinámico
@@ -553,13 +554,14 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
         return (_crear_grafico_vacio("No hay datos recientes"),) * 4 + (html.Span("Esperando datos..."),)
 
     ctx = callback_context
-    trigger_id = ctx.triggered_id
+    trigger_id = ctx.triggered
+    trigger_id_prop = trigger_id[0]['prop_id'].split('.')[0] if trigger_id else None
     
     # 1. Volver a muestrear los datos con el intervalo seleccionado
     df_demanda_ohlc, df_oferta_ohlc = crear_datos_ohlc(df_raw_global, interval_value)
 
     # 2. Determinar el rango de fechas a mostrar
-    if trigger_id == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
+    if trigger_id_prop == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
         fecha_inicio, fecha_fin = obtener_rango_fechas_del_grafico(relayout_data, df_demanda_ohlc)
     else:
         if df_demanda_ohlc.empty: # Seguridad si el resample no da datos
@@ -567,11 +569,11 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
         fecha_inicio, fecha_fin = df_demanda_ohlc.index.min(), df_demanda_ohlc.index.max()
 
     # 3. Crear el gráfico principal
-    if trigger_id == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
+    if trigger_id_prop == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
         fig_principal = PreventUpdate # No redibujar si solo fue zoom
     else:
         if tab_value == 'tab-velas':
-            fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
+            fig_calle = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-spread':
             fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-burbuja':
