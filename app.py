@@ -1,29 +1,26 @@
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import Dash, html, dcc, callback_context
-from dash.dependencies import Input, Output, State
+from dash import Dash, html, dcc, callback_context, Input, Output, State, PreventUpdate
 import datetime
 import dash.exceptions 
 from sqlalchemy import create_engine 
 import os
-from dateutil.relativedelta import relativedelta # Importación nueva para cálculos de fecha
+from dateutil.relativelayout import relativedelta 
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
-
-# La URL de conexión se obtiene de la variable de entorno de Render
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# La conexión debe ser SSL forzada, como aprendimos
+# Forzar prefijo 'postgresql://'
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     
 try:
-    # Render ya tiene la URL en la variable de entorno
     ENGINE = create_engine(DATABASE_URL)
+    print(f"[{datetime.datetime.now()}] Conexión a PostgreSQL establecida.")
 except Exception as e:
-    print(f"Error al crear engine de SQLAlchemy: {e}")
+    print(f"[{datetime.datetime.now()}] ERROR FATAL: No se pudo crear engine de SQLAlchemy: {e}")
     ENGINE = None
 
 # --- CONSTANTES DE COLOR ---
@@ -32,19 +29,12 @@ COLOR_CARD_BACKGROUND = '#1a1a1a'
 COLOR_BORDER = '#333333'
 COLOR_TEXT = '#f0f0f0'
 COLOR_HIGHLIGHT = '#00CC96'
-
-# Paleta para PRECIOS
 COLOR_PRECIO_VENTA = '#E74C3C' 
 COLOR_PRECIO_COMPRA = '#2ECC71'
-
-# Paleta para VOLUMEN
 COLOR_VOL_VENTA = '#C0392B'
 COLOR_VOL_COMPRA = '#27AE60'
 COLOR_VOL_TOTAL = '#3498DB' 
-
-# Paleta para SPREAD
 COLOR_SPREAD = 'rgba(255, 255, 255, 0.1)'
-
 PALETA_METODOS = [
     '#3498DB', '#E67E22', '#2ECC71', '#9B59B6', '#F1C40F', 
     '#1ABC9C', '#D35400', '#2C3E50', '#BDC3C7', '#7F8C8D'
@@ -52,6 +42,8 @@ PALETA_METODOS = [
 DEFAULT_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M'
 DEFAULT_INTERVAL = '1H'
 DEFAULT_CHART_TYPE = 'tab-velas'
+# Límite de días para la carga de datos (para no exceder 512MB RAM)
+DAYS_TO_LOAD = 7
 
 # --- DEFINICIÓN DE ESTILOS CSS ---
 EXTERNAL_STYLESHEET = [
@@ -64,24 +56,16 @@ APP_CSS = f"""
         color: {COLOR_TEXT};
         margin: 0; padding: 0;
     }}
-    .container {{
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 20px;
-    }}
+    .container {{ max-width: 1400px; margin: 0 auto; padding: 20px; }}
     h1 {{
         font-weight: 700; font-size: 2.5em; margin-bottom: 5px;
         color: #FFFFFF; text-align: center; letter-spacing: 1px;
     }}
-    
-    /* --- Estilos para las Pestañas (Tabs) --- */
     .Tabs {{
         background-color: {COLOR_CARD_BACKGROUND};
-        border-radius: 8px;
-        overflow: hidden;
+        border-radius: 8px; overflow: hidden;
         border: 1px solid {COLOR_BORDER};
-        margin-bottom: 20px;
-        display: flex; /* Añadido para mejor control de tabs */
+        margin-bottom: 20px; display: flex;
     }}
     .Tab {{
         background-color: {COLOR_CARD_BACKGROUND};
@@ -97,13 +81,8 @@ APP_CSS = f"""
         font-weight: 500;
         letter-spacing: 0.5px;
     }}
-    .Tab:hover {{
-        background-color: #272727;
-        color: {COLOR_HIGHLIGHT};
-    }}
-    .Tab:last-child {{
-        border-right: none;
-    }}
+    .Tab:hover {{ background-color: #272727; color: {COLOR_HIGHLIGHT}; }}
+    .Tab:last-child {{ border-right: none; }}
     .Tab--selected {{
         background-color: {COLOR_HIGHLIGHT} !important;
         color: {COLOR_BACKGROUND_APP} !important;
@@ -111,17 +90,14 @@ APP_CSS = f"""
         font-weight: 700;
         box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
     }}
-    
     #output-rango-fecha {{
         border: 1px solid {COLOR_BORDER};
         background-color: {COLOR_CARD_BACKGROUND};
         padding: 12px 0; font-size: 1.15em; letter-spacing: 0.7px;
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
         border-radius: 8px; margin-bottom: 25px; font-weight: 400;
-        text-align: center; 
-        width: 95%; margin-left: auto; margin-right: auto;
-        position: relative; z-index: 10;
-        margin-top: -35px;
+        text-align: center; width: 95%; margin-left: auto; margin-right: auto;
+        position: relative; z-index: 10; margin-top: -35px;
     }}
     details {{
         background-color: {COLOR_CARD_BACKGROUND};
@@ -130,10 +106,7 @@ APP_CSS = f"""
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
         transition: all 0.3s ease-in-out;
     }}
-    details:hover {{
-        border-color: {COLOR_HIGHLIGHT};
-        box-shadow: 0 0 15px rgba(0, 204, 150, 0.2);
-    }}
+    details:hover {{ border-color: {COLOR_HIGHLIGHT}; box-shadow: 0 0 15px rgba(0, 204, 150, 0.2); }}
     summary {{
         padding: 15px 20px; cursor: pointer; outline: none;
         list-style: none; font-size: 1.3em; font-weight: 700;
@@ -143,95 +116,85 @@ APP_CSS = f"""
     summary::before {{
         content: '▶'; font-size: 0.7em; margin-right: 10px;
         color: {COLOR_HIGHLIGHT}; transition: transform 0.2s;
-        transform: rotate(0deg);
     }}
-    details[open] > summary::before {{
-        content: '▼';
-        transform: rotate(0deg);
-    }}
-    .graph-container {{
-        padding: 15px;
-        border-top: 1px solid {COLOR_BORDER};
-    }}
-    .graph-separator {{
-        border-bottom: 1px dashed {COLOR_BORDER};
-        margin: 20px 0;
-    }}
+    details[open] > summary::before {{ content: '▼'; }}
+    .graph-container {{ padding: 15px; border-top: 1px solid {COLOR_BORDER}; }}
+    .graph-separator {{ border-bottom: 1px dashed {COLOR_BORDER}; margin: 20px 0; }}
     .interval-selector {{
-        display: flex;
-        justify-content: center;
-        margin-bottom: 20px;
+        display: flex; justify-content: center; margin-bottom: 20px;
         background-color: {COLOR_CARD_BACKGROUND};
-        padding: 8px;
-        border-radius: 8px;
+        padding: 8px; border-radius: 8px;
         border: 1px solid {COLOR_BORDER};
         box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
     }}
-    .interval-selector .Select-control, .interval-selector .Select-value, .interval-selector .Select-option {{
-        color: {COLOR_TEXT} !important;
-    }}
-    .radio-item {{
-        margin: 0 12px;
-        cursor: pointer;
-    }}
+    .radio-item {{ margin: 0 12px; cursor: pointer; }}
     .radio-item input[type="radio"] {{
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        appearance: none;
-        width: 14px;
-        height: 14px;
+        -webkit-appearance: none; appearance: none;
+        width: 14px; height: 14px;
         border: 2px solid {COLOR_BORDER};
-        border-radius: 50%;
-        margin-right: 5px;
+        border-radius: 50%; margin-right: 5px;
         transition: border-color 0.2s;
-        vertical-align: middle;
-        position: relative;
-        top: -1px;
+        vertical-align: middle; position: relative; top: -1px;
     }}
     .radio-item input[type="radio"]:checked {{
         border: 2px solid {COLOR_HIGHLIGHT};
         background-color: {COLOR_HIGHLIGHT};
-        box-shadow: 0 0 0 2px {COLOR_BACKGROUND_APP}; /* Glow effect */
+        box-shadow: 0 0 0 2px {COLOR_BACKGROUND_APP};
     }}
-    .radio-item label {{
-        color: rgba(255,255,255,0.8);
-        font-weight: 400;
-    }}
+    .radio-item label {{ color: rgba(255,255,255,0.8); font-weight: 400; }}
 """
 
 # --- 1. PROCESAMIENTO DE DATOS (¡OPTIMIZADO!) ---
 
-def cargar_datos_crudos(days_to_load=7):
+def cargar_datos_crudos(days_to_load=DAYS_TO_LOAD):
     """
     Carga datos desde PostgreSQL, limitando el histórico para ahorrar RAM.
-    Por defecto, carga los últimos 7 días.
     """
     if ENGINE is None:
-        return pd.DataFrame(), pd.DataFrame()
+        print(f"[{datetime.datetime.now()}] cargar_datos_crudos abortado: No hay conexión a DB.")
+        return pd.DataFrame(), pd.DataFrame(), "P2P (Error)"
 
     try:
-        # Calcular la fecha de inicio (hoy - N días)
-        start_date = datetime.datetime.now() - relativedelta(days=days_to_load)
+        start_date = datetime.datetime.now() - relativedelta(days=days_to_load) 
         start_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Consulta SQL que filtra los datos en la base de datos (PostgreSQL)
-        sql_query = f"""
-        SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago"
-        FROM {TABLE_NAME}
-        WHERE "Timestamp" >= '{start_date_str}'
-        ORDER BY "Timestamp"
-        """
+        # Fallback para el nombre de la exchange si la columna no existe
+        # Intentamos leer la columna, si falla, reintentamos sin ella.
+        exchange_name = "P2P"
+        df_raw = pd.DataFrame()
         
-        print(f"Cargando datos: Desde {start_date_str} (Últimos {days_to_load} días)...")
-        df_raw = pd.read_sql(sql_query, con=ENGINE)
+        try:
+            sql_query = f"""
+            SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago", "Exchange_Name"
+            FROM {TABLE_NAME}
+            WHERE "Timestamp" >= '{start_date_str}'
+            ORDER BY "Timestamp"
+            """
+            print(f"[{datetime.datetime.now()}] Cargando datos (con Exchange_Name): Desde {start_date_str}...")
+            df_raw = pd.read_sql(sql_query, con=ENGINE)
+            if not df_raw.empty and 'Exchange_Name' in df_raw.columns and not df_raw['Exchange_Name'].empty:
+                 exchange_name = df_raw['Exchange_Name'].iloc[0]
+
+        except Exception as e_col:
+            # Si falla (ej. columna "Exchange_Name" no existe), reintentamos sin ella.
+            print(f"[{datetime.datetime.now()}] Advertencia: Columna 'Exchange_Name' no encontrada. Reintentando. {e_col}")
+            sql_query_fallback = f"""
+            SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago"
+            FROM {TABLE_NAME}
+            WHERE "Timestamp" >= '{start_date_str}'
+            ORDER BY "Timestamp"
+            """
+            df_raw = pd.read_sql(sql_query_fallback, con=ENGINE)
+            exchange_name = "P2P (Fallback)" # Nombre por defecto
+
         
         if df_raw.empty:
-            print("No hay datos recientes en el rango.")
-            return pd.DataFrame(), pd.DataFrame()
+            print(f"[{datetime.datetime.now()}] No hay datos recientes en el rango.")
+            return pd.DataFrame(), pd.DataFrame(), exchange_name
             
-        print(f"✅ Cargados {len(df_raw)} registros recientes.")
+        print(f"[{datetime.datetime.now()}] ✅ Cargados {len(df_raw)} registros recientes.")
 
-        # Convertir tipos (Necesario para que Pandas funcione bien)
+        # Convertir tipos
         df_raw['Timestamp'] = pd.to_datetime(df_raw['Timestamp'])
         df_raw['Precio'] = pd.to_numeric(df_raw['Precio'], errors='coerce')
         df_raw['Volumen'] = pd.to_numeric(df_raw['Volumen'], errors='coerce')
@@ -246,98 +209,38 @@ def cargar_datos_crudos(days_to_load=7):
         df_metodos_expl['Metodos_Pago'] = df_metodos_expl['Metodos_Pago'].str.strip()
         df_metodos_expl['Metodos_Pago'] = df_metodos_expl['Metodos_Pago'].replace('', 'Indefinido')
         
-        return df_raw, df_metodos_expl
+        return df_raw, df_metodos_expl, exchange_name
 
     except Exception as e:
-        print(f"❌ ERROR de DB en cargar_datos_crudos: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        print(f"[{datetime.datetime.now()}] ❌ ERROR de DB en cargar_datos_crudos: {e}")
+        return pd.DataFrame(), pd.DataFrame(), "P2P (Error)"
 
 def crear_datos_ohlc(df_raw, interval):
-    """Toma los datos crudos y los remuestrea a un intervalo (OHLC + Volumen)."""
-    if df_raw.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
+    if df_raw.empty: return pd.DataFrame(), pd.DataFrame()
     df_raw_indexed = df_raw.set_index('Timestamp')
-    
-    ohlcv_agg = {
-        'Precio': 'ohlc',
-        'Volumen': 'sum'
-    }
-
-    df_demanda = df_raw_indexed[df_raw_indexed['Tipo'] == 'Demanda']
-    df_demanda_ohlc = df_demanda.resample(interval).agg(ohlcv_agg)
-    df_demanda_ohlc.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    df_demanda_ohlc = df_demanda_ohlc.dropna()
-
-    df_oferta = df_raw_indexed[df_raw_indexed['Tipo'] == 'Oferta']
-    df_oferta_ohlc = df_oferta.resample(interval).agg(ohlcv_agg)
-    df_oferta_ohlc.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    df_oferta_ohlc = df_oferta_ohlc.dropna()
-    
-    return df_demanda_ohlc, df_oferta_ohlc
+    ohlcv_agg = {'Precio': 'ohlc', 'Volumen': 'sum'}
+    df_demanda = df_raw_indexed[df_raw_indexed['Tipo'] == 'Demanda'].resample(interval).agg(ohlcv_agg).dropna()
+    df_demanda.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    df_oferta = df_raw_indexed[df_raw_indexed['Tipo'] == 'Oferta'].resample(interval).agg(ohlcv_agg).dropna()
+    df_oferta.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+    return df_demanda, df_oferta
 
 # --- 2. CREACIÓN DE GRÁFICOS (Funciones de Visualización) ---
-# ... (Funciones de gráficos sin cambios en la lógica de dibujo) ...
 
 def _crear_grafico_vacio(mensaje="No hay datos en este rango"):
     fig = go.Figure()
-    fig.add_annotation(text=mensaje,
-                       xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-                       font=dict(size=16, color=COLOR_TEXT))
-    fig.update_layout(
-        height=350, template="plotly_dark",
-        plot_bgcolor=COLOR_CARD_BACKGROUND,
-        paper_bgcolor=COLOR_CARD_BACKGROUND,
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
-    )
+    fig.add_annotation(text=mensaje, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLOR_TEXT))
+    fig.update_layout(height=350, template="plotly_dark", plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, xaxis=dict(showgrid=False, zeroline=False, showticklabels=False), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
     return fig
 
 # --- VISTA 1: Estilo Trading (Velas) ---
 def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
-    """Crea la figura principal (Velas + Volumen)."""
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03, row_heights=[0.8, 0.2]
-    )
-    # Fila 1: Velas
-    fig.add_trace(go.Candlestick(
-        x=df_demanda_ohlc.index,
-        open=df_demanda_ohlc['Open'], high=df_demanda_ohlc['High'],
-        low=df_demanda_ohlc['Low'], close=df_demanda_ohlc['Close'],
-        name='Demanda (Compra)',
-        increasing_line_color=COLOR_PRECIO_COMPRA,
-        decreasing_line_color=COLOR_PRECIO_COMPRA,
-        line=dict(width=1.5)
-    ), row=1, col=1)
-    fig.add_trace(go.Candlestick(
-        x=df_oferta_ohlc.index,
-        open=df_oferta_ohlc['Open'], high=df_oferta_ohlc['High'],
-        low=df_oferta_ohlc['Low'], close=df_oferta_ohlc['Close'],
-        name='Oferta (Venta)',
-        increasing_line_color=COLOR_PRECIO_VENTA,
-        decreasing_line_color=COLOR_PRECIO_VENTA,
-        line=dict(width=1.5)
-    ), row=1, col=1)
-    # Fila 2: Volumen
-    fig.add_trace(go.Bar(
-        x=df_demanda_ohlc.index, y=df_demanda_ohlc['Volume'],
-        name='Vol. Compra', marker_color=COLOR_VOL_COMPRA, showlegend=False
-    ), row=2, col=1)
-    fig.add_trace(go.Bar(
-        x=df_oferta_ohlc.index, y=df_oferta_ohlc['Volume'],
-        name='Vol. Venta', marker_color=COLOR_VOL_VENTA, showlegend=False
-    ), row=2, col=1)
-    # Layout
-    fig.update_layout(
-        height=600, template="plotly_dark", hovermode="x unified",
-        title={'text': f'Estilo Trading (Intervalo: {interval})'}, 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
-        xaxis_rangeslider_visible=False,
-        plot_bgcolor=COLOR_CARD_BACKGROUND,
-        paper_bgcolor=COLOR_BACKGROUND_APP,
-        barmode='overlay'
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+    fig.add_trace(go.Candlestick(x=df_demanda_ohlc.index, open=df_demanda_ohlc['Open'], high=df_demanda_ohlc['High'], low=df_demanda_ohlc['Low'], close=df_demanda_ohlc['Close'], name='Demanda (Compra)', increasing_line_color=COLOR_PRECIO_COMPRA, decreasing_line_color=COLOR_PRECIO_COMPRA, line=dict(width=1.5)), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df_oferta_ohlc.index, open=df_oferta_ohlc['Open'], high=df_oferta_ohlc['High'], low=df_oferta_ohlc['Low'], close=df_oferta_ohlc['Close'], name='Oferta (Venta)', increasing_line_color=COLOR_PRECIO_VENTA, decreasing_line_color=COLOR_PRECIO_VENTA, line=dict(width=1.5)), row=1, col=1)
+    fig.add_trace(go.Bar(x=df_demanda_ohlc.index, y=df_demanda_ohlc['Volume'], name='Vol. Compra', marker_color=COLOR_VOL_COMPRA, showlegend=False), row=2, col=1)
+    fig.add_trace(go.Bar(x=df_oferta_ohlc.index, y=df_oferta_ohlc['Volume'], name='Vol. Venta', marker_color=COLOR_VOL_VENTA, showlegend=False), row=2, col=1)
+    fig.update_layout(height=600, template="plotly_dark", hovermode="x unified", title={'text': f'Estilo Trading (Intervalo: {interval})'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), xaxis_rangeslider_visible=False, plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_BACKGROUND_APP, barmode='overlay')
     fig.update_yaxes(title_text="Precio USDT (VES)", row=1, col=1, gridcolor='rgba(255,255,255,0.08)')
     fig.update_yaxes(title_text="Volumen USDT", row=2, col=1, showgrid=False)
     fig.update_xaxes(gridcolor='rgba(255,255,255,0.08)', row=2, col=1)
@@ -346,47 +249,15 @@ def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
 
 # --- VISTA 2: Estilo Analítico (Área de Spread) ---
 def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
-    """Crea la figura principal (Área de Spread + Volumen Total)."""
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03, row_heights=[0.8, 0.2]
-    )
-    # Combinar datos para volumen total y asegurar que los índices coincidan
-    df_combinado = pd.merge(
-        df_demanda_ohlc[['Close', 'Volume']], 
-        df_oferta_ohlc[['Close', 'Volume']],
-        left_index=True, right_index=True, how='outer', suffixes=('_D', '_O')
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+    df_combinado = pd.merge(df_demanda_ohlc[['Close', 'Volume']], df_oferta_ohlc[['Close', 'Volume']], left_index=True, right_index=True, how='outer', suffixes=('_D', '_O'))
     df_combinado['Close_D'] = df_combinado['Close_D'].ffill()
     df_combinado['Close_O'] = df_combinado['Close_O'].ffill()
     df_combinado['Volumen_Total'] = df_combinado['Volume_D'].fillna(0) + df_combinado['Volume_O'].fillna(0)
-    
-    # Fila 1: Líneas y Área
-    fig.add_trace(go.Scatter(
-        x=df_combinado.index, y=df_combinado['Close_D'],
-        mode='lines', line=dict(color=COLOR_PRECIO_COMPRA, width=1.5),
-        name='Demanda (Compra)', hovertemplate='Compra: <b>%{y:.2f} VES</b><extra></extra>'
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df_combinado.index, y=df_combinado['Close_O'],
-        mode='lines', line=dict(color=COLOR_PRECIO_VENTA, width=1.5),
-        fill='tonexty', fillcolor=COLOR_SPREAD,
-        name='Oferta (Venta)', hovertemplate='Venta: <b>%{y:.2f} VES</b><extra></extra>'
-    ), row=1, col=1)
-    # Fila 2: Volumen
-    fig.add_trace(go.Bar(
-        x=df_combinado.index, y=df_combinado['Volumen_Total'],
-        name='Volumen Total', marker_color=COLOR_VOL_TOTAL, showlegend=False
-    ), row=2, col=1)
-    # Layout
-    fig.update_layout(
-        height=600, template="plotly_dark", hovermode="x unified",
-        title={'text': f'Estilo Analítico (Intervalo: {interval})'},
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
-        xaxis_rangeslider_visible=False,
-        plot_bgcolor=COLOR_CARD_BACKGROUND,
-        paper_bgcolor=COLOR_BACKGROUND_APP
-    )
+    fig.add_trace(go.Scatter(x=df_combinado.index, y=df_combinado['Close_D'], mode='lines', line=dict(color=COLOR_PRECIO_COMPRA, width=1.5), name='Demanda (Compra)', hovertemplate='Compra: <b>%{y:.2f} VES</b><extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_combinado.index, y=df_combinado['Close_O'], mode='lines', line=dict(color=COLOR_PRECIO_VENTA, width=1.5), fill='tonexty', fillcolor=COLOR_SPREAD, name='Oferta (Venta)', hovertemplate='Venta: <b>%{y:.2f} VES</b><extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Bar(x=df_combinado.index, y=df_combinado['Volumen_Total'], name='Volumen Total', marker_color=COLOR_VOL_TOTAL, showlegend=False), row=2, col=1)
+    fig.update_layout(height=600, template="plotly_dark", hovermode="x unified", title={'text': f'Estilo Analítico (Intervalo: {interval})'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), xaxis_rangeslider_visible=False, plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_BACKGROUND_APP)
     fig.update_yaxes(title_text="Precio USDT (VES)", row=1, col=1, gridcolor='rgba(255,255,255,0.08)')
     fig.update_yaxes(title_text="Volumen USDT", row=2, col=1, showgrid=False)
     fig.update_xaxes(gridcolor='rgba(255,255,255,0.08)', row=2, col=1)
@@ -395,126 +266,41 @@ def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
 
 # --- VISTA 3: Estilo Moderno (Línea/Burbuja) ---
 def crear_figura_burbuja(df_demanda_ohlc, df_oferta_ohlc, interval):
-    """Crea la figura principal (Línea Suavizada + Burbujas de Volumen)."""
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03, row_heights=[0.8, 0.2]
-    )
-    # Combinar para escala de burbuja
-    df_combinado = pd.merge(
-        df_demanda_ohlc[['Close', 'Volume']], 
-        df_oferta_ohlc[['Close', 'Volume']],
-        left_index=True, right_index=True, how='outer', suffixes=('_D', '_O')
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
+    df_combinado = pd.merge(df_demanda_ohlc[['Close', 'Volume']], df_oferta_ohlc[['Close', 'Volume']], left_index=True, right_index=True, how='outer', suffixes=('_D', '_O'))
     df_combinado['Volumen_Total'] = df_combinado['Volume_D'].fillna(0) + df_combinado['Volume_O'].fillna(0)
-    
-    # Escalar tamaño de burbuja
     if not df_combinado['Volumen_Total'].empty and df_combinado['Volumen_Total'].max() > 0:
         max_vol = df_combinado['Volumen_Total'].max()
         df_combinado['Bubble_Size'] = df_combinado['Volumen_Total'].apply(lambda x: 5 + (x/max_vol) * 25)
-    else:
-        df_combinado['Bubble_Size'] = 5
-
-    # Fila 1: Líneas y Burbujas
-    fig.add_trace(go.Scatter(
-        x=df_demanda_ohlc.index, y=df_demanda_ohlc['Close'],
-        mode='lines+markers', name='Demanda (Compra)',
-        line=dict(color=COLOR_PRECIO_COMPRA, width=3, shape='spline'),
-        marker=dict(
-            size=df_combinado['Bubble_Size'], color=COLOR_PRECIO_COMPRA,
-            line=dict(width=1, color=COLOR_CARD_BACKGROUND)
-        ),
-        hovertemplate='Compra: <b>%{y:.2f} VES</b><br>Vol. Total: %{customdata:,.0f} USDT<extra></extra>',
-        customdata=df_combinado['Volumen_Total']
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df_oferta_ohlc.index, y=df_oferta_ohlc['Close'],
-        mode='lines+markers', name='Oferta (Venta)',
-        line=dict(color=COLOR_PRECIO_VENTA, width=3, shape='spline', dash='dot'),
-        marker=dict(
-            size=df_combinado['Bubble_Size'], color=COLOR_PRECIO_VENTA,
-            line=dict(width=1, color=COLOR_CARD_BACKGROUND)
-        ),
-        hovertemplate='Venta: <b>%{y:.2f} VES</b><br>Vol. Total: %{customdata:,.0f} USDT<extra></extra>',
-        customdata=df_combinado['Volumen_Total']
-    ), row=1, col=1)
-    # Fila 2: Volumen (para contexto)
-    fig.add_trace(go.Bar(
-        x=df_combinado.index, y=df_combinado['Volumen_Total'],
-        name='Volumen Total', marker_color=COLOR_VOL_TOTAL, showlegend=False
-    ), row=2, col=1)
-    # Layout
-    fig.update_layout(
-        height=600, template="plotly_dark", hovermode="x unified",
-        title={'text': f'Estilo Moderno (Intervalo: {interval})'},
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), 
-        xaxis_rangeslider_visible=False,
-        plot_bgcolor=COLOR_CARD_BACKGROUND,
-        paper_bgcolor=COLOR_BACKGROUND_APP
-    )
+    else: df_combinado['Bubble_Size'] = 5
+    fig.add_trace(go.Scatter(x=df_demanda_ohlc.index, y=df_demanda_ohlc['Close'], mode='lines+markers', name='Demanda (Compra)', line=dict(color=COLOR_PRECIO_COMPRA, width=3, shape='spline'), marker=dict(size=df_combinado['Bubble_Size'], color=COLOR_PRECIO_COMPRA, line=dict(width=1, color=COLOR_CARD_BACKGROUND)), hovertemplate='Compra: <b>%{y:.2f} VES</b><br>Vol. Total: %{customdata:,.0f} USDT<extra></extra>', customdata=df_combinado['Volumen_Total']), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_oferta_ohlc.index, y=df_oferta_ohlc['Close'], mode='lines+markers', name='Oferta (Venta)', line=dict(color=COLOR_PRECIO_VENTA, width=3, shape='spline', dash='dot'), marker=dict(size=df_combinado['Bubble_Size'], color=COLOR_PRECIO_VENTA, line=dict(width=1, color=COLOR_CARD_BACKGROUND)), hovertemplate='Venta: <b>%{y:.2f} VES</b><br>Vol. Total: %{customdata:,.0f} USDT<extra></extra>', customdata=df_combinado['Volumen_Total']), row=1, col=1)
+    fig.add_trace(go.Bar(x=df_combinado.index, y=df_combinado['Volumen_Total'], name='Volumen Total', marker_color=COLOR_VOL_TOTAL, showlegend=False), row=2, col=1)
+    fig.update_layout(height=600, template="plotly_dark", hovermode="x unified", title={'text': f'Estilo Moderno (Intervalo: {interval})'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), xaxis_rangeslider_visible=False, plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_BACKGROUND_APP)
     fig.update_yaxes(title_text="Precio USDT (VES)", row=1, col=1, gridcolor='rgba(255,255,255,0.08)')
     fig.update_yaxes(title_text="Volumen USDT", row=2, col=1, showgrid=False)
     fig.update_xaxes(gridcolor='rgba(255,255,255,0.08)', row=2, col=1)
     fig.update_xaxes(showticklabels=False, row=1, col=1)
     return fig
 
-
 # --- GRÁFICOS DE MÉTODOS (Funciones) ---
-
 def crear_grafico_premium(df_metodos_expl, fecha_inicio, fecha_fin):
-    df_filtrado_tiempo = df_metodos_expl[
-        (df_metodos_expl['Timestamp'] >= fecha_inicio) & 
-        (df_metodos_expl['Timestamp'] <= fecha_fin)
-    ]
-
-    if df_filtrado_tiempo.empty:
-        return _crear_grafico_vacio("No hay datos de métodos de pago en este rango")
-
+    df_filtrado_tiempo = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)]
+    if df_filtrado_tiempo.empty: return _crear_grafico_vacio("No hay datos de métodos de pago en este rango")
     top_10_metodos_por_volumen = df_filtrado_tiempo.groupby('Metodos_Pago')['Volumen'].sum().nlargest(10).index
     df_top_10 = df_filtrado_tiempo[df_filtrado_tiempo['Metodos_Pago'].isin(top_10_metodos_por_volumen)]
-
     df_precios_promedio = df_top_10.groupby(['Metodos_Pago', 'Tipo'])['Precio'].mean().reset_index()
-
     df_demanda = df_precios_promedio[df_precios_promedio['Tipo'] == 'Demanda'].sort_values('Precio', ascending=True)
     df_oferta = df_precios_promedio[df_precios_promedio['Tipo'] == 'Oferta']
-
     fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        y=df_demanda['Metodos_Pago'],
-        x=df_demanda['Precio'],
-        name='Precio Compra (Demanda)',
-        orientation='h',
-        marker_color=COLOR_PRECIO_COMPRA,
-        hovertemplate='Compra: <b>%{x:.2f} VES</b><extra></extra>'
-    ))
-    
-    fig.add_trace(go.Bar(
-        y=df_oferta['Metodos_Pago'],
-        x=df_oferta['Precio'],
-        name='Precio Venta (Oferta)',
-        orientation='h',
-        marker_color=COLOR_PRECIO_VENTA,
-        hovertemplate='Venta: <b>%{x:.2f} VES</b><extra></extra>'
-    ))
-    
+    fig.add_trace(go.Bar(y=df_demanda['Metodos_Pago'], x=df_demanda['Precio'], name='Precio Compra (Demanda)', orientation='h', marker_color=COLOR_PRECIO_COMPRA, hovertemplate='Compra: <b>%{x:.2f} VES</b><extra></extra>'))
+    fig.add_trace(go.Bar(y=df_oferta['Metodos_Pago'], x=df_oferta['Precio'], name='Precio Venta (Oferta)', orientation='h', marker_color=COLOR_PRECIO_VENTA, hovertemplate='Venta: <b>%{x:.2f} VES</b><extra></extra>'))
     rango_titulo = f"{fecha_inicio.strftime('%b %d')} - {fecha_fin.strftime('%b %d, %H:%M')}"
-    
-    fig.update_layout(
-        height=400, template="plotly_dark", barmode='group',
-        title={'text': f'1. Premium: Precio Promedio por Método (Rango: {rango_titulo})', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')},
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        xaxis=dict(title='Precio Promedio (VES)', gridcolor='rgba(255,255,255,0.08)'),
-        yaxis=dict(title='Métodos (Top 10 por Volumen)', showgrid=False, categoryorder='array', categoryarray=df_demanda['Metodos_Pago']),
-        plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, margin=dict(l=100)
-    )
+    fig.update_layout(height=400, template="plotly_dark", barmode='group', title={'text': f'1. Premium: Precio Promedio por Método (Rango: {rango_titulo})', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), xaxis=dict(title='Precio Promedio (VES)', gridcolor='rgba(255,255,255,0.08)'), yaxis=dict(title='Métodos (Top 10 por Volumen)', showgrid=False, categoryorder='array', categoryarray=df_demanda['Metodos_Pago']), plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, margin=dict(l=100))
     return fig
 
 def crear_grafico_flujo(df_metodos_expl, fecha_inicio, fecha_fin):
-    df_filtrado = df_metodos_expl[
-        (df_metodos_expl['Timestamp'] >= fecha_inicio) & 
-        (df_metodos_expl['Timestamp'] <= fecha_fin)
-    ]
+    df_filtrado = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)]
     if df_filtrado.empty: return _crear_grafico_vacio()
     top_10_metodos = df_filtrado.groupby('Metodos_Pago')['Volumen'].sum().nlargest(10).index
     df_top_10 = df_filtrado[df_filtrado['Metodos_Pago'].isin(top_10_metodos)]
@@ -524,34 +310,13 @@ def crear_grafico_flujo(df_metodos_expl, fecha_inicio, fecha_fin):
     df_volumen['Total'] = df_volumen['Demanda'] + df_volumen['Oferta']
     df_volumen = df_volumen.sort_values('Total', ascending=True)
     fig = go.Figure()
-    fig.add_trace(go.Bar(
-        y=df_volumen['Metodos_Pago'], x=df_volumen['Demanda'],
-        name='Vol. Compra (Demanda)', orientation='h', 
-        marker_color=COLOR_VOL_COMPRA,
-        hovertemplate='Compra: <b>%{x:,.0f} USDT</b><extra></extra>'
-    ))
-    fig.add_trace(go.Bar(
-        y=df_volumen['Metodos_Pago'], x=df_volumen['Oferta'],
-        name='Vol. Venta (Oferta)', orientation='h',
-        marker_color=COLOR_VOL_VENTA,
-        hovertemplate='Venta: <b>%{x:,.0f} USDT</b><extra></extra>'
-    ))
-    fig.update_layout(
-        height=400, template="plotly_dark", barmode='stack', 
-        title={'text': '2. Flujo: Volumen por Método (Oferta vs. Demanda)', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')},
-        xaxis=dict(title='Volumen Total (USDT)', gridcolor='rgba(255,255,255,0.08)'),
-        yaxis=dict(title='Métodos (Top 10)', showgrid=False),
-        plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        margin=dict(l=100)
-    )
+    fig.add_trace(go.Bar(y=df_volumen['Metodos_Pago'], x=df_volumen['Demanda'], name='Vol. Compra (Demanda)', orientation='h', marker_color=COLOR_VOL_COMPRA, hovertemplate='Compra: <b>%{x:,.0f} USDT</b><extra></extra>'))
+    fig.add_trace(go.Bar(y=df_volumen['Metodos_Pago'], x=df_volumen['Oferta'], name='Vol. Venta (Oferta)', orientation='h', marker_color=COLOR_VOL_VENTA, hovertemplate='Venta: <b>%{x:,.0f} USDT</b><extra></extra>'))
+    fig.update_layout(height=400, template="plotly_dark", barmode='stack', title={'text': '2. Flujo: Volumen por Método (Oferta vs. Demanda)', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')}, xaxis=dict(title='Volumen Total (USDT)', gridcolor='rgba(255,255,255,0.08)'), yaxis=dict(title='Métodos (Top 10)', showgrid=False), plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), margin=dict(l=100))
     return fig
 
 def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
-    df_filtrado = df_metodos_expl[
-        (df_metodos_expl['Timestamp'] >= fecha_inicio) & 
-        (df_metodos_expl['Timestamp'] <= fecha_fin)
-    ]
+    df_filtrado = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)]
     if df_filtrado.empty: return _crear_grafico_vacio()
     duration_days = (fecha_fin - fecha_inicio).days
     if duration_days <= 2: interval, interval_label = '1H', "1 Hora"
@@ -559,33 +324,13 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     else: interval, interval_label = '1D', "1 Día"
     top_metodos = df_filtrado.groupby('Metodos_Pago')['Volumen'].sum().nlargest(7).index
     df_filtrado['Metodo_Agrupado'] = df_filtrado['Metodos_Pago'].apply(lambda x: x if x in top_metodos else 'Otros')
-    df_resampled = (
-        df_filtrado.set_index('Timestamp')
-        .groupby('Metodo_Agrupado')
-        .resample(interval)['Volumen']
-        .sum()
-        .unstack(level=0, fill_value=0)
-    )
-    if 'Otros' in df_resampled.columns:
-        df_resampled = df_resampled[[col for col in df_resampled if col != 'Otros'] + ['Otros']]
+    df_resampled = (df_filtrado.set_index('Timestamp').groupby('Metodo_Agrupado').resample(interval)['Volumen'].sum().unstack(level=0, fill_value=0))
+    if 'Otros' in df_resampled.columns: df_resampled = df_resampled[[col for col in df_resampled if col != 'Otros'] + ['Otros']]
     fig = go.Figure()
     for i, metodo in enumerate(df_resampled.columns):
         color = PALETA_METODOS[i % len(PALETA_METODOS)] if metodo != 'Otros' else '#7F8C8D'
-        fig.add_trace(go.Scatter(
-            x=df_resampled.index, y=df_resampled[metodo],
-            name=metodo, mode='lines', line=dict(width=0.5, color=color),
-            stackgroup='one', groupnorm='percent',
-            hovertemplate=f'<b>{metodo}</b><br>%{{y:.1f}}%<extra></extra>'
-        ))
-    fig.update_layout(
-        height=400, template="plotly_dark", 
-        title={'text': f'3. Tendencia: Cuota de Mercado (Intervalo: {interval_label})', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')},
-        xaxis=dict(title='Fecha', gridcolor='rgba(255,255,255,0.08)'),
-        yaxis=dict(title='Cuota de Mercado (%)', showgrid=False, ticksuffix='%'),
-        plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        hovermode='x unified', margin=dict(l=100)
-    )
+        fig.add_trace(go.Scatter(x=df_resampled.index, y=df_resampled[metodo], name=metodo, mode='lines', line=dict(width=0.5, color=color), stackgroup='one', groupnorm='percent', hovertemplate=f'<b>{metodo}</b><br>%{{y:.1f}}%<extra></extra>'))
+    fig.update_layout(height=400, template="plotly_dark", title={'text': f'3. Tendencia: Cuota de Mercado (Intervalo: {interval_label})', 'font': dict(size=18, color=COLOR_TEXT, family='Roboto')}, xaxis=dict(title='Fecha', gridcolor='rgba(255,255,255,0.08)'), yaxis=dict(title='Cuota de Mercado (%)', showgrid=False, ticksuffix='%'), plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5), hovermode='x unified', margin=dict(l=100))
     return fig
 
 
@@ -593,10 +338,8 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
 
 def obtener_rango_fechas_del_grafico(relayout_data, df_ohlc_actual):
     if relayout_data is None or 'xaxis.range[0]' not in relayout_data:
-        if not df_ohlc_actual.empty:
-            return df_ohlc_actual.index.min(), df_ohlc_actual.index.max()
-        else:
-            return datetime.datetime.now(), datetime.datetime.now()
+        if not df_ohlc_actual.empty: return df_ohlc_actual.index.min(), df_ohlc_actual.index.max()
+        else: return datetime.datetime.now(), datetime.datetime.now()
     try:
         fecha_inicio_str = relayout_data['xaxis.range[0]']
         fecha_fin_str = relayout_data['xaxis.range[1]']
@@ -612,34 +355,7 @@ def crear_texto_rango_fechas(fecha_inicio, fecha_fin):
         html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '700'})
     ])
 
-# --- 4. INICIALIZACIÓN DE DASH Y CARGA DE DATOS ---
-
-# Carga la primera vez al iniciar la app (limitar a 7 días para el arranque)
-df_raw_global, df_metodos_expl_global = cargar_datos_crudos(days_to_load=7) 
-df_ohlc_demanda_global, df_ohlc_oferta_global = crear_datos_ohlc(df_raw_global, DEFAULT_INTERVAL)
-
-# Figura inicial
-figura_principal_inicial = crear_figura_velas(
-    df_ohlc_demanda_global, df_ohlc_oferta_global, DEFAULT_INTERVAL
-)
-if not df_ohlc_demanda_global.empty:
-    fecha_inicio_inicial, fecha_fin_inicial = (
-        df_ohlc_demanda_global.index.min(), df_ohlc_demanda_global.index.max()
-    )
-else:
-    fecha_inicio_inicial, fecha_fin_inicial = datetime.datetime.now(), datetime.datetime.now()
-    
-figura_premium_inicial = crear_grafico_premium(
-    df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial
-)
-figura_flujo_inicial = crear_grafico_flujo(
-    df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial
-)
-figura_tendencia_inicial = crear_grafico_tendencia(
-    df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial
-)
-texto_fecha_inicial = crear_texto_rango_fechas(fecha_inicio_inicial, fecha_fin_inicial)
-
+# --- 4. INICIALIZACIÓN DE DASH ---
 
 app = Dash(__name__, external_stylesheets=EXTERNAL_STYLESHEET)
 server = app.server # Variable server para Gunicorn
@@ -666,77 +382,138 @@ app.index_string = f'''
 '''
 
 # --- 5. LAYOUT DE LA APLICACIÓN ---
-# Si la carga inicial falla (BD vacía o error de conexión), el layout muestra un mensaje.
-if df_raw_global.empty and ENGINE is not None:
-    app.layout = html.Div([
-        html.H1("Estado de la Base de Datos", style={'textAlign': 'center', 'color': 'white'}),
-        html.P(f"La base de datos está conectada pero vacía. Esperando datos del Scraper (Worker).", style={'textAlign': 'center', 'color': COLOR_HIGHLIGHT})
-    ], className='container')
-elif ENGINE is None:
-    app.layout = html.Div([
-        html.H1("ERROR CRÍTICO: CONEXIÓN A DB", style={'textAlign': 'center', 'color': 'red'}),
-        html.P(f"La variable DATABASE_URL es incorrecta o el servidor no pudo conectar. Revisa la configuración de Render.", style={'textAlign': 'center', 'color': 'white'})
-    ], className='container')
-else:
-    app.layout = html.Div([
-        html.H1("Análisis de Mercado P2P Modular"),
+def crear_layout():
+    # Carga inicial de datos (puede estar vacía al principio)
+    df_raw_global, df_metodos_expl_global, exchange_name_global = cargar_datos_crudos(days_to_load=DAYS_TO_LOAD) 
+    
+    # Título dinámico
+    app_title = html.H1(f"Análisis de Mercado P2P: {exchange_name_global}")
+
+    if df_raw_global.empty and ENGINE is not None:
+        # Caso: BD conectada pero vacía
+        return html.Div([
+            dcc.Store(id='store-raw-data'),
+            dcc.Store(id='store-methods-data'),
+            dcc.Interval(id='interval-data-refresh', interval=15 * 60 * 1000, n_intervals=0), # 15 minutos
+            html.H1("Estado de la Base de Datos"),
+            html.P(f"La base de datos está conectada pero vacía. Esperando datos del Scraper (Worker).", style={'textAlign': 'center', 'color': COLOR_HIGHLIGHT})
+        ], className='container')
+    elif ENGINE is None:
+        # Caso: Error fatal de conexión
+        return html.Div([
+            html.H1("ERROR CRÍTICO: CONEXIÓN A DB", style={'textAlign': 'center', 'color': 'red'}),
+            html.P(f"La variable DATABASE_URL es incorrecta o el servidor no pudo conectar. Revisa la configuración de Render.", style={'textAlign': 'center', 'color': 'white'})
+        ], className='container')
+    else:
+        # --- Caso: Hay datos, mostrar layout completo ---
         
-        # --- Selector de Intervalo (Global) ---
-        html.Div(className='interval-selector', children=[
-            dcc.RadioItems(
-                id='interval-selector',
-                options=[
-                    {'label': '15 Minutos', 'value': '15T', 'className': 'radio-item'},
-                    {'label': '1 Hora', 'value': '1H', 'className': 'radio-item'},
-                    {'label': '4 Horas', 'value': '4H', 'className': 'radio-item'},
-                    {'label': '1 Día', 'value': '1D', 'className': 'radio-item'},
-                ],
-                value=DEFAULT_INTERVAL,
-                labelStyle={'display': 'inline-block'},
-            )
-        ]),
+        # Procesar datos iniciales
+        df_ohlc_demanda_global, df_ohlc_oferta_global = crear_datos_ohlc(df_raw_global, DEFAULT_INTERVAL)
+        figura_principal_inicial = crear_figura_velas(df_ohlc_demanda_global, df_ohlc_oferta_global, DEFAULT_INTERVAL)
         
-        # --- Selector de Tipo de Gráfico (Tabs) ---
-        dcc.Tabs(id="tabs-grafico-principal", value=DEFAULT_CHART_TYPE, className='Tabs', children=[
-            dcc.Tab(label='Estilo Trading (Velas)', value='tab-velas', className='Tab', selected_className='Tab--selected'),
-            dcc.Tab(label='Estilo Analítico (Spread)', value='tab-spread', className='Tab', selected_className='Tab--selected'),
-            dcc.Tab(label='Estilo Moderno (Burbuja)', value='tab-burbuja', className='Tab', selected_className='Tab--selected'),
-        ]),
-        
-        # --- Contenedor del Gráfico Principal ---
-        dcc.Graph(
-            id='grafico-principal', 
-            figure=figura_principal_inicial,
-            config={'scrollZoom': True}
-        ),
-        
-        html.Div(
-            id='output-rango-fecha', 
-            children=texto_fecha_inicial,
-        ),
-        
-        # --- Gráficos Avanzados ---
-        html.Details(
-            open=False, 
-            children=[
-                html.Summary(
-                    html.B("💳 Análisis Avanzado de Métodos de Pago"),
-                ),
-                html.Div(className='graph-container', children=[
-                    dcc.Graph(id='grafico-metodos-premium', figure=figura_premium_inicial, config={'scrollZoom': True}),
-                    html.Hr(className='graph-separator'),
-                    dcc.Graph(id='grafico-metodos-flujo', figure=figura_flujo_inicial, config={'scrollZoom': True}),
-                    html.Hr(className='graph-separator'),
-                    dcc.Graph(id='grafico-metodos-tendencia', figure=figura_tendencia_inicial, config={'scrollZoom': True})
-                ])
-            ]
-        ),
-        
-    ], className='container') 
+        if not df_ohlc_demanda_global.empty:
+            fecha_inicio_inicial, fecha_fin_inicial = (df_ohlc_demanda_global.index.min(), df_ohlc_demanda_global.index.max())
+        else:
+            fecha_inicio_inicial, fecha_fin_inicial = datetime.datetime.now(), datetime.datetime.now()
+            
+        figura_premium_inicial = crear_grafico_premium(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        figura_flujo_inicial = crear_grafico_flujo(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        figura_tendencia_inicial = crear_grafico_tendencia(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        texto_fecha_inicial = crear_texto_rango_fechas(fecha_inicio_inicial, fecha_fin_inicial)
+
+        return html.Div([
+            # --- Almacenes de Datos y Temporizador ---
+            dcc.Store(id='store-raw-data'),
+            dcc.Store(id='store-methods-data'),
+            dcc.Interval(id='interval-data-refresh', interval=15 * 60 * 1000, n_intervals=0), # 15 minutos
+            
+            app_title, # ¡Título actualizado!
+            
+            # --- Selector de Intervalo (Global) ---
+            html.Div(className='interval-selector', children=[
+                dcc.RadioItems(
+                    id='interval-selector',
+                    options=[
+                        {'label': '15 Minutos', 'value': '15T', 'className': 'radio-item'},
+                        {'label': '1 Hora', 'value': '1H', 'className': 'radio-item'},
+                        {'label': '4 Horas', 'value': '4H', 'className': 'radio-item'},
+                        {'label': '1 Día', 'value': '1D', 'className': 'radio-item'},
+                    ],
+                    value=DEFAULT_INTERVAL,
+                    labelStyle={'display': 'inline-block'},
+                )
+            ]),
+            
+            # --- Selector de Tipo de Gráfico (Tabs) ---
+            dcc.Tabs(id="tabs-grafico-principal", value=DEFAULT_CHART_TYPE, className='Tabs', children=[
+                dcc.Tab(label='Estilo Trading (Velas)', value='tab-velas', className='Tab', selected_className='Tab--selected'),
+                dcc.Tab(label='Estilo Analítico (Spread)', value='tab-spread', className='Tab', selected_className='Tab--selected'),
+                dcc.Tab(label='Estilo Moderno (Burbuja)', value='tab-burbuja', className='Tab', selected_className='Tab--selected'),
+            ]),
+            
+            # --- Contenedor del Gráfico Principal ---
+            dcc.Graph(
+                id='grafico-principal', 
+                figure=figura_principal_inicial,
+                config={'scrollZoom': True}
+            ),
+            
+            html.Div(
+                id='output-rango-fecha', 
+                children=texto_fecha_inicial,
+            ),
+            
+            # --- Gráficos Avanzados ---
+            html.Details(
+                open=False, 
+                children=[
+                    html.Summary(
+                        html.B("💳 Análisis Avanzado de Métodos de Pago"),
+                    ),
+                    html.Div(className='graph-container', children=[
+                        dcc.Graph(id='grafico-metodos-premium', figure=figura_premium_inicial, config={'scrollZoom': True}),
+                        html.Hr(className='graph-separator'),
+                        dcc.Graph(id='grafico-metodos-flujo', figure=figura_flujo_inicial, config={'scrollZoom': True}),
+                        html.Hr(className='graph-separator'),
+                        dcc.Graph(id='grafico-metodos-tendencia', figure=figura_tendencia_inicial, config={'scrollZoom': True})
+                    ])
+                ]
+            ),
+            
+        ], className='container') 
+
+# Asignar el layout a la app
+app.layout = crear_layout
+
+# --- 6. CALLBACKS (¡OPTIMIZADOS CON DCC.STORE!) ---
+
+# --- CALLBACK 1: Carga de Datos (Lento, se ejecuta cada 15 min) ---
+@app.callback(
+    Output('store-raw-data', 'data'),
+    Output('store-methods-data', 'data'),
+    Input('interval-data-refresh', 'n_intervals')
+)
+def update_global_data_store(n):
+    """
+    Este callback se ejecuta en segundo plano cada 15 minutos (o al cargar la página).
+    Lee de la base de datos (lento) y guarda los datos en dcc.Store (rápido).
+    """
+    print(f"[{datetime.datetime.now()}] Actualizando store de datos (Intervalo {n})...")
+    df_raw, df_metodos_expl, exchange_name = cargar_datos_crudos(days_to_load=DAYS_TO_LOAD)
+    
+    if df_raw.empty:
+        print(f"[{datetime.datetime.now()}] No se cargaron datos, no se actualiza el store.")
+        raise PreventUpdate
+
+    # Convertir a JSON para guardar en dcc.Store
+    json_raw = df_raw.to_json(orient='split', date_format='iso')
+    json_methods = df_metodos_expl.to_json(orient='split', date_format='iso')
+    
+    print(f"[{datetime.datetime.now()}] Store de datos actualizado con {len(df_raw)} registros.")
+    return json_raw, json_methods
 
 
-# --- 6. CALLBACKS (¡OPTIMIZADO!) ---
-
+# --- CALLBACK 2: Actualización de Gráficos (Rápido, se ejecuta en cada clic) ---
 @app.callback(
     Output('grafico-principal', 'figure'),
     Output('grafico-metodos-premium', 'figure'),
@@ -744,18 +521,34 @@ else:
     Output('grafico-metodos-tendencia', 'figure'),
     Output('output-rango-fecha', 'children'),
     # --- Inputs que disparan el callback ---
+    Input('store-raw-data', 'data'),         # <-- LEE DEL ALMACÉN
+    Input('store-methods-data', 'data'),   # <-- LEE DEL ALMACÉN
     Input('tabs-grafico-principal', 'value'), 
     Input('interval-selector', 'value'),      
     Input('grafico-principal', 'relayoutData') 
 )
-def actualizar_graficos(tab_value, interval_value, relayout_data):
-    # ¡Cargamos los datos DE NUEVO! Pero ahora solo los últimos 7 días, lo que es rápido.
-    # Esta es la única forma de reflejar los nuevos datos del scraper.
-    df_raw_global, df_metodos_expl_global = cargar_datos_crudos(days_to_load=7) 
+def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relayout_data):
+    """
+    Este callback se ejecuta cada vez que el usuario hace clic.
+    NO lee de la base de datos, lee de dcc.Store (rápido).
+    """
+    
+    # Si los datos aún no se han cargado (ej. al inicio), no hacer nada
+    if not json_raw or not json_methods:
+        print(f"[{datetime.datetime.now()}] actualizar_graficos: Esperando datos del store...")
+        raise PreventUpdate
+
+    # Convertir JSON de vuelta a DataFrame (Esto es rápido y en memoria)
+    df_raw_global = pd.read_json(json_raw, orient='split')
+    df_metodos_expl_global = pd.read_json(json_methods, orient='split')
+    
+    # Corregir tipos de datos que se pierden en JSON (MUY IMPORTANTE)
+    df_raw_global['Timestamp'] = pd.to_datetime(df_raw_global['Timestamp'], errors='coerce')
+    df_metodos_expl_global['Timestamp'] = pd.to_datetime(df_metodos_expl_global['Timestamp'], errors='coerce')
+
     
     if df_raw_global.empty:
-        # Si la BD está vacía (o no hay datos en 7 días), mostramos gráficos vacíos.
-        return (_crear_grafico_vacio("BD Vacía / No hay datos recientes"),) * 3 + (html.Span("Esperando datos..."),)
+        return (_crear_grafico_vacio("No hay datos recientes"),) * 4 + (html.Span("Esperando datos..."),)
 
     ctx = callback_context
     trigger_id = ctx.triggered_id
@@ -764,16 +557,16 @@ def actualizar_graficos(tab_value, interval_value, relayout_data):
     df_demanda_ohlc, df_oferta_ohlc = crear_datos_ohlc(df_raw_global, interval_value)
 
     # 2. Determinar el rango de fechas a mostrar
-    if trigger_id == 'grafico-principal':
-        # Caso A: El usuario hizo zoom/pan
+    if trigger_id == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
         fecha_inicio, fecha_fin = obtener_rango_fechas_del_grafico(relayout_data, df_demanda_ohlc)
     else:
-        # Caso B: El usuario cambió Pestaña o Intervalo (Resetear zoom)
+        if df_demanda_ohlc.empty: # Seguridad si el resample no da datos
+             return (_crear_grafico_vacio(f"No hay datos para el intervalo {interval_value}"),) * 4 + (html.Span("Datos insuficientes..."),)
         fecha_inicio, fecha_fin = df_demanda_ohlc.index.min(), df_demanda_ohlc.index.max()
 
-    # 3. Crear el gráfico principal (Solo si no fue zoom)
-    if trigger_id == 'grafico-principal':
-        fig_principal = dash.no_update
+    # 3. Crear el gráfico principal
+    if trigger_id == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
+        fig_principal = PreventUpdate # No redibujar si solo fue zoom
     else:
         if tab_value == 'tab-velas':
             fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
@@ -782,9 +575,9 @@ def actualizar_graficos(tab_value, interval_value, relayout_data):
         elif tab_value == 'tab-burbuja':
             fig_principal = crear_figura_burbuja(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         else:
-            fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
+            fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value) # Fallback
 
-    # 4. Crear los gráficos avanzados (Siempre se actualizan)
+    # 4. Crear los gráficos avanzados (Siempre se actualizan con el rango de zoom/pan)
     fig_premium = crear_grafico_premium(df_metodos_expl_global, fecha_inicio, fecha_fin)
     fig_flujo = crear_grafico_flujo(df_metodos_expl_global, fecha_inicio, fecha_fin)
     fig_tendencia = crear_grafico_tendencia(df_metodos_expl_global, fecha_inicio, fecha_fin)
@@ -794,3 +587,11 @@ def actualizar_graficos(tab_value, interval_value, relayout_data):
     
     return fig_principal, fig_premium, fig_flujo, fig_tendencia, texto_fecha
 
+# --- 7. EJECUCIÓN ---
+if __name__ == '__main__':
+    # Esto solo se usa para pruebas locales, Render usará gunicorn
+    if ENGINE:
+        print(f"[{datetime.datetime.now()}] Iniciando servidor de prueba local en http://127.0.0.1:8050")
+        app.run_server(debug=True, host='0.0.0.0', port=8050)
+    else:
+        print(f"[{datetime.datetime.now()}] No se pudo iniciar el servidor. Revisa la conexión a la base de datos.")
