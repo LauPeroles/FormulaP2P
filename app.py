@@ -1,12 +1,14 @@
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import Dash, html, dcc, callback_context, Input, Output, State, PreventUpdate
+# --- LÍNEA CORREGIDA ---
+from dash import Dash, html, dcc, callback_context, Input, Output, State
 import datetime
-import dash.exceptions 
+# --- LÍNEA CORREGIDA ---
+from dash.exceptions import PreventUpdate
 from sqlalchemy import create_engine 
 import os
-from dateutil.relativelayout import relativedelta 
+from dateutil.relativedelta import relativedelta 
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
