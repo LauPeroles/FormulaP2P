@@ -1,202 +1,225 @@
 import requests
 import pandas as pd
-from datetime import datetime
-import time 
-from sqlalchemy import create_engine 
-import os 
-import traceback 
+from sqlalchemy import create_engine, text, inspect, Column, Integer, String, Float, DateTime, Text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+import time
+import datetime
+import os
+import sys
 
-# --- 1. CONFIGURACIÓN DE LA BASE DE DATOS (¡MODIFICADA PARA PAAS!) ---
+# --- CONFIGURACIÓN DE BASE DE DATOS ---
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    print(f"[{datetime.datetime.now()}] ERROR FATAL: No se encontró la variable de entorno DATABASE_URL.")
+    sys.exit(1)
+
+# Forzar prefijo 'postgresql://'
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 try:
-    DATABASE_URL = os.environ.get('DATABASE_URL')
-    if not DATABASE_URL:
-        raise ValueError("No se encontró la variable de entorno DATABASE_URL")
-    
-    if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        
-    engine = create_engine(DATABASE_URL)
-    TABLE_NAME = 'p2p_anuncios'
-    print("Scraper conectado a la base de datos PostgreSQL.")
+    ENGINE = create_engine(DATABASE_URL)
 except Exception as e:
-    print(f"❌ ERROR: Scraper no pudo conectarse a la BD. Deteniendo. {e}")
-    engine = None # Detenemos el script si no hay BD
+    print(f"[{datetime.datetime.now()}] ERROR FATAL: No se pudo crear engine de SQLAlchemy: {e}")
+    sys.exit(1)
 
-# --- LÍMITES DEL FILTRO DINÁMICO ---
-TOLERANCIA_PRECIO = 0.10 # 10% de tolerancia
+Base = declarative_base()
+TABLE_NAME = 'p2p_anuncios'
 
-# --- 2. FUNCIÓN DE GUARDADO (Sin cambios) ---
-def guardar_en_bd(df_nuevos_registros):
-    global engine, TABLE_NAME
+# --- DEFINICIÓN DEL MODELO DE LA TABLA ---
+class Anuncio(Base):
+    __tablename__ = TABLE_NAME
+    id = Column(Integer, primary_key=True)
+    Timestamp = Column(DateTime, nullable=False, index=True)
+    Tipo = Column(String(10), nullable=False)
+    Precio = Column(Float, nullable=False)
+    Volumen = Column(Float, nullable=False)
+    Volumen_min = Column(Float)
+    Volumen_max = Column(Float)
+    Metodos_Pago = Column(Text)
+    Exchange_Name = Column(String(50))
+
+# --- FUNCIÓN PARA CREAR LA TABLA (si no existe) ---
+def inicializar_base_de_datos():
     try:
-        df_nuevos_registros.to_sql(
-            TABLE_NAME,
-            con=engine,
-            if_exists='append', 
-            index=False,
-            method='multi' # Optimizado para inserciones masivas
-        )
-    except Exception as e:
-        raise Exception(f"❌ Error al guardar en la BD: {e}")
-
-# --- 3. FUNCIÓN DE EXTRACCIÓN (Sin cambios) ---
-def obtener_datos_p2p(pagina, trade_type):
-    url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-    headers = {
-        'Content-Type': 'application/json',
-        'clientType': 'web',
-    }
-    payload = {
-        "page": pagina,
-        "rows": 20,
-        "payTypes": [],
-        "asset": "USDT",
-        "fiat": "VES",
-        "tradeType": trade_type,
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10) # 10 seg de timeout
-        response.raise_for_status()
-        data = response.json()
-        return data.get('data', [])
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error al obtener datos de la página {pagina} ({trade_type}): {e}")
-        return []
-
-# --- 4. FUNCIÓN DE PROCESAMIENTO (Sin cambios) ---
-def procesar_datos(raw_data, fecha_hora, tipo_etiqueta, precio_min, precio_max):
-    datos_limpios = []
-    registros_rechazados = 0 
-    
-    for ad in raw_data:
-        ad_info = ad.get('adv', {})
-        precio = float(ad_info.get('price', 0))
-
-        if precio < precio_min or precio > precio_max:
-            registros_rechazados += 1
-            continue 
-
-        trade_methods = ad_info.get('tradeMethods', [])
-        pay_methods = [method.get('payType') for method in trade_methods if method.get('payType')]
-        if not pay_methods:
-            pay_method_list = ad.get('collector', {}).get('payMethodList', [])
-            pay_methods = [method.get('payType') for method in pay_method_list if method.get('payType')]
-        
-        datos_limpios.append({
-            'Timestamp': fecha_hora,
-            'Tipo': tipo_etiqueta,
-            'Precio': precio, 
-            'Volumen': float(ad_info.get('tradableQuantity', 0)),
-            'Metodos_Pago': ', '.join(pay_methods),
-        })
-        
-    if registros_rechazados > 0 and len(raw_data) > 0:
-        precio_lote = float(raw_data[0].get('adv', {}).get('price', 0))
-        if precio_lote >= precio_min and precio_lote <= precio_max:
-             print(f"  <i>- (Filtro): {registros_rechazados} anuncios rechazados por precio fuera de rango ({precio_min:.2f} - {precio_max:.2f}).</i>")
-        
-    return datos_limpios
-
-# --- 5. FUNCIÓN PRINCIPAL (Sin cambios) ---
-def ejecutar_extraccion(num_paginas=10):
-    
-    fecha_hora_actual = datetime.now() # Usamos el objeto datetime
-    print(f"\n--- Iniciando ciclo de extracción a las {fecha_hora_actual.strftime('%Y-%m-%d %H:%M:%S')} ---")
-
-    datos_por_tipo = {}
-
-    for trade_type in ["SELL", "BUY"]:
-        todos_los_datos_tipo = []
-        tipo_etiqueta = "Demanda" if trade_type == "SELL" else "Oferta"
-        print(f"→ Obteniendo datos de {tipo_etiqueta}...")
-
-        raw_page_1 = obtener_datos_p2p(1, trade_type)
-        
-        if not raw_page_1:
-            print(f"  <i>- No se pudo obtener la página 1 para {tipo_etiqueta}. Saltando...</i>")
-            continue
-
-        try:
-            precio_base = float(raw_page_1[0].get('adv', {}).get('price', 0))
-            if precio_base == 0:
-                raise Exception("Precio base es 0")
+        with ENGINE.connect() as connection:
+            inspector = inspect(ENGINE)
+            if not inspector.has_table(TABLE_NAME):
+                print(f"[{datetime.datetime.now()}] Creando tabla '{TABLE_NAME}' por primera vez...")
+                Base.metadata.create_all(ENGINE)
+                print(f"[{datetime.datetime.now()}] Tabla '{TABLE_NAME}' creada con éxito.")
                 
-            precio_max_logico = precio_base * (1 + TOLERANCIA_PRECIO)
-            precio_min_logico = precio_base * (1 - TOLERANCIA_PRECIO)
-            
-            print(f"  <i>- Precio base ({tipo_etiqueta}): {precio_base:.2f}. Rango aceptado: ({precio_min_logico:.2f} - {precio_max_logico:.2f})</i>")
+                # Intentar crear el índice de Timestamp inmediatamente
+                print(f"[{datetime.datetime.now()}] Creando índice 'idx_timestamp' en la nueva tabla...")
+                sql_command = text(f'CREATE INDEX IF NOT EXISTS idx_timestamp ON {TABLE_NAME} ("Timestamp");')
+                connection.execute(sql_command)
+                connection.commit()
+                print(f"[{datetime.datetime.now()}] Índice 'idx_timestamp' creado.")
+            else:
+                print(f"[{datetime.datetime.now()}] La tabla '{TABLE_NAME}' ya existe.")
+    except Exception as e:
+        print(f"[{datetime.datetime.now()}] ERROR durante la inicialización de la BD: {e}")
 
-        except Exception as e:
-            print(f"  <i>- Error al calcular precio base para {tipo_etiqueta}: {e}. Saltando...</i>")
-            continue
-            
-        datos_pagina_1 = procesar_datos(raw_page_1, fecha_hora_actual, tipo_etiqueta, precio_min_logico, precio_max_logico)
-        todos_los_datos_tipo.extend(datos_pagina_1)
+# --- CLASE PRINCIPAL DEL SCRAPER ---
+class ScraperP2P:
+    def __init__(self, engine):
+        self.base_url = "https://api.p2p.co/api/v1/otc/market-order"
+        self.session_db = sessionmaker(bind=engine)()
+        self.total_registros_sesion = 0
+        self.exchange_name = "ElDorado" # Nombre por defecto
 
-        for pagina in range(2, num_paginas + 1):
-            raw_p2p_data = obtener_datos_p2p(pagina, trade_type)
-            if raw_p2p_data:
-                datos_pagina = procesar_datos(raw_p2p_data, fecha_hora_actual, tipo_etiqueta, precio_min_logico, precio_max_logico)
-                todos_los_datos_tipo.extend(datos_pagina)
-        
-        datos_por_tipo[tipo_etiqueta] = pd.DataFrame(todos_los_datos_tipo)
-        print(f"  <i>- Anuncios de {tipo_etiqueta} recolectados: {len(datos_por_tipo[tipo_etiqueta])}</i>")
-
-    df_demanda_nuevo = datos_por_tipo.get("Demanda", pd.DataFrame())
-    df_oferta_nuevo = datos_por_tipo.get("Oferta", pd.DataFrame())
-
-    df_para_guardar = pd.concat([df_demanda_nuevo, df_oferta_nuevo], ignore_index=True)
-
-    registros_anadidos = 0 
-
-    if not df_para_guardar.empty:
+    def _obtener_precio_base(self, tipo_anuncio):
+        """Obtiene el precio de referencia para el filtro."""
         try:
-            guardar_en_bd(df_para_guardar)
-            registros_anadidos = len(df_para_guardar) 
-            print(f"\n📊 ¡Éxito! {registros_anadidos} nuevos registros añadidos a la BD.")
-            
-        except Exception as e:
-            # Relanzamos el error para que el bucle principal lo capture
-            raise Exception(f"\n❌ ERROR al guardar en la base de datos: {e}")
-            
-    else:
-        print("No se obtuvieron datos válidos en este ciclo. La base de datos no fue modificada.")
-    
-    return registros_anadidos
+            params = {
+                "currency": "USDT",
+                "paymentCurrency": "VES",
+                "side": "BUY" if tipo_anuncio == "Demanda" else "SELL",
+                "paymentMethodIds": [],
+                "size": 1,
+                "page": 1
+            }
+            response = requests.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if data and data['result'] and data['result']['list']:
+                precio_base = float(data['result']['list'][0]['price'])
+                # Intentar obtener el nombre de la exchange
+                if 'exchangeName' in data['result']['list'][0]:
+                    self.exchange_name = data['result']['list'][0]['exchangeName']
+                return precio_base
+        except requests.RequestException as e:
+            print(f"<i>[!] Advertencia: No se pudo obtener el precio base. {e}</i>")
+        return None
 
-# --- 6. BUCLE PRINCIPAL (24/7) ---
+    def _aplicar_filtro_inteligente(self, precio_base, tipo_anuncio):
+        """Devuelve el rango de precios aceptable."""
+        if precio_base is None:
+            return None, None
+        
+        # Rango de filtro (ej. 12%)
+        rango = 0.12 
+        if tipo_anuncio == "Demanda":
+            precio_min = precio_base * (1 - rango)
+            precio_max = precio_base * (1 + rango)
+        else: # Oferta
+            precio_min = precio_base * (1 - rango)
+            precio_max = precio_base * (1 + rango)
+        return precio_min, precio_max
+
+    def obtener_anuncios(self, tipo_anuncio):
+        """Obtiene y filtra los anuncios de la API."""
+        print(f"  → Obteniendo datos de {tipo_anuncio}...")
+        side = "BUY" if tipo_anuncio == "Demanda" else "SELL"
+        
+        precio_base = self._obtener_precio_base(tipo_anuncio)
+        p_min, p_max = self._aplicar_filtro_inteligente(precio_base, tipo_anuncio)
+        
+        if p_min is None:
+            print(f"<i>[!] No se pudo aplicar filtro para {tipo_anuncio}. Saltando...</i>")
+            return [], 0
+            
+        print(f"<i>   <i-> Precio base ({tipo_anuncio}): {precio_base:.2f}. Rango aceptado: ({p_min:.2f} - {p_max:.2f})</i>")
+
+        params = {
+            "currency": "USDT",
+            "paymentCurrency": "VES",
+            "side": side,
+            "paymentMethodIds": [],
+            "size": 200, # Pedimos 200 para tener un buen set de datos
+            "page": 1
+        }
+        
+        try:
+            response = requests.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            anuncios_filtrados = []
+            if data and data['result'] and data['result']['list']:
+                timestamp = datetime.datetime.now()
+                
+                for item in data['result']['list']:
+                    try:
+                        precio = float(item['price'])
+                        
+                        # El filtro de precios
+                        if not (p_min <= precio <= p_max):
+                            continue # El precio está fuera de rango, lo ignoramos
+
+                        volumen = float(item['amount'])
+                        volumen_min = float(item['minLimit'])
+                        volumen_max = float(item['maxLimit'])
+                        metodos_pago_lista = [pm['paymentMethodName'] for pm in item.get('paymentMethods', [])]
+                        metodos_pago_str = ', '.join(metodos_pago_lista)
+
+                        anuncio_obj = Anuncio(
+                            Timestamp=timestamp,
+                            Tipo=tipo_anuncio,
+                            Precio=precio,
+                            Volumen=volumen,
+                            Volumen_min=volumen_min,
+                            Volumen_max=volumen_max,
+                            Metodos_Pago=metodos_pago_str,
+                            Exchange_Name=self.exchange_name
+                        )
+                        anuncios_filtrados.append(anuncio_obj)
+                    except (ValueError, TypeError) as e:
+                        print(f"<i>   [!] Error procesando un anuncio: {e}. Saltando...</i>")
+                        
+                print(f"<i>   <i> Anuncios de {tipo_anuncio} recolectados: {len(anuncios_filtrados)}</i>")
+                return anuncios_filtrados, len(anuncios_filtrados)
+            else:
+                print(f"<i>   <i> No se encontraron anuncios de {tipo_anuncio}.</i>")
+                return [], 0
+                
+        except requests.RequestException as e:
+            print(f"<i>   [!] Error de red obteniendo {tipo_anuncio}: {e}</i>")
+            return [], 0
+
+    def guardar_en_db(self, anuncios):
+        """Guarda la lista de anuncios en la base de datos."""
+        if not anuncios:
+            return
+        try:
+            self.session_db.add_all(anuncios)
+            self.session_db.commit()
+        except Exception as e:
+            print(f"<i>[!] Error al guardar en BD: {e}</i>")
+            self.session_db.rollback()
+
+    def ejecutar_ciclo(self):
+        """Ejecuta un ciclo completo de recolección."""
+        print(f"--- Iniciando ciclo de extracción a las {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+        
+        anuncios_demanda, count_d = self.obtener_anuncios("Demanda")
+        anuncios_oferta, count_o = self.obtener_anuncios("Oferta")
+        
+        todos_anuncios = anuncios_demanda + anuncios_oferta
+        self.guardar_en_db(todos_anuncios)
+        
+        total_nuevos = count_d + count_o
+        self.total_registros_sesion += total_nuevos
+        
+        print(f"  📊 \x1b[1;32m¡Éxito! {total_nuevos} nuevos registros añadidos a la BD.\x1b[0m")
+        print(f"  ⭐ Total acumulado en esta sesión: {self.total_registros_sesion} registros.")
+        print(f"-----------------------------------------------------------------")
+
+# --- PUNTO DE ENTRADA DEL SCRIPT ---
 if __name__ == "__main__":
     
-    if engine is None:
-        print("Finalizando script. No hay conexión a la base de datos.")
-    else:
-        total_registros_acumulados = 0
-        tiempo_espera_segundos = 120 # 2 minutos
-        
-        print(f"\n--- Programación iniciada. El script se ejecutará cada {tiempo_espera_segundos} segundos. ---")
-        print(f"--- Usando FILTRO DINÁMICO con tolerancia de {TOLERANCIA_PRECIO*100}% ---")
-        print("--- Presiona Ctrl+C para detener. ---")
-
-        while True:
-            try:
-                registros_este_ciclo = ejecutar_extraccion(num_paginas=10)
-                total_registros_acumulados += registros_este_ciclo
-                
-                print(f"\n⭐ Total acumulado en esta sesión: {total_registros_acumulados} registros.")
-                print("-" * 50)
-                
-            except KeyboardInterrupt:
-                print("\n--- Script detenido manualmente por el usuario. ---")
-                break
-                
-            except Exception as e:
-                print("\n" + "="*50)
-                print(f"🔥 ERROR INESPERADO EN EL CICLO PRINCIPAL 🔥")
-                print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                print("El script NO se detendrá. Reintentando en el próximo ciclo.")
-                print("\nDetalle del error:")
-                traceback.print_exc() 
-                print("="*50 + "\n")
-            
-            print(f"--- Siguiente ciclo en {tiempo_espera_segundos} segundos... ---")
-            time.sleep(tiempo_espera_segundos)
+    # Asegurarse de que la tabla exista antes de empezar
+    inicializar_base_de_datos()
+    
+    scraper = ScraperP2P(ENGINE)
+    
+    # Este es el modo "Cron Job": se ejecuta UNA VEZ y termina.
+    # Render lo llamará cada 2 minutos.
+    try:
+        scraper.ejecutar_ciclo()
+        print(f"[{datetime.datetime.now()}] Ciclo único completado. Saliendo.")
+        sys.exit(0) # Salida limpia
+    except Exception as e:
+        print(f"[{datetime.datetime.now()}] ERROR INESPERADO en el ciclo principal: {e}")
+        sys.exit(1) # Salida con error
