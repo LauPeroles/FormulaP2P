@@ -47,8 +47,8 @@ DEFAULT_CHART_TYPE = 'tab-velas'
 
 # --- AJUSTE FINAL DE RAM ---
 # Límite de días para la carga de datos (para no exceder 512MB RAM)
-# Bajamos de 2 a 1 día para la carga inicial. ¡El mínimo absoluto!
-DAYS_TO_LOAD = 1
+# Bajamos de 4 a 2 días para asegurar el arranque.
+DAYS_TO_LOAD = 2
 
 # --- DEFINICIÓN DE ESTILOS CSS ---
 EXTERNAL_STYLESHEET = [
@@ -232,7 +232,7 @@ def crear_datos_ohlc(df_raw, interval):
 
 # --- 2. CREACIÓN DE GRÁFICOS (Funciones de Visualización) ---
 
-def _crear_grafico_vacio(mensaje="Cargando datos..."):
+def _crear_grafico_vacio(mensaje="No hay datos en este rango"):
     fig = go.Figure()
     fig.add_annotation(text=mensaje, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLOR_TEXT))
     fig.update_layout(height=350, template="plotly_dark", plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, xaxis=dict(showgrid=False, zeroline=False, showticklabels=False), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
@@ -240,8 +240,6 @@ def _crear_grafico_vacio(mensaje="Cargando datos..."):
 
 # --- VISTA 1: Estilo Trading (Velas) ---
 def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
-    if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
-        return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
     fig.add_trace(go.Candlestick(x=df_demanda_ohlc.index, open=df_demanda_ohlc['Open'], high=df_demanda_ohlc['High'], low=df_demanda_ohlc['Low'], close=df_demanda_ohlc['Close'], name='Demanda (Compra)', increasing_line_color=COLOR_PRECIO_COMPRA, decreasing_line_color=COLOR_PRECIO_COMPRA, line=dict(width=1.5)), row=1, col=1)
     fig.add_trace(go.Candlestick(x=df_oferta_ohlc.index, open=df_oferta_ohlc['Open'], high=df_oferta_ohlc['High'], low=df_oferta_ohlc['Low'], close=df_oferta_ohlc['Close'], name='Oferta (Venta)', increasing_line_color=COLOR_PRECIO_VENTA, decreasing_line_color=COLOR_PRECIO_VENTA, line=dict(width=1.5)), row=1, col=1)
@@ -256,8 +254,6 @@ def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
 
 # --- VISTA 2: Estilo Analítico (Área de Spread) ---
 def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
-    if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
-        return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
     df_combinado = pd.merge(df_demanda_ohlc[['Close', 'Volume']], df_oferta_ohlc[['Close', 'Volume']], left_index=True, right_index=True, how='outer', suffixes=('_D', '_O'))
     df_combinado['Close_D'] = df_combinado['Close_D'].ffill()
@@ -275,8 +271,6 @@ def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
 
 # --- VISTA 3: Estilo Moderno (Línea/Burbuja) ---
 def crear_figura_burbuja(df_demanda_ohlc, df_oferta_ohlc, interval):
-    if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
-        return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.8, 0.2])
     df_combinado = pd.merge(df_demanda_ohlc[['Close', 'Volume']], df_oferta_ohlc[['Close', 'Volume']], left_index=True, right_index=True, how='outer', suffixes=('_D', '_O'))
     df_combinado['Volumen_Total'] = df_combinado['Volume_D'].fillna(0) + df_combinado['Volume_O'].fillna(0)
@@ -397,52 +391,66 @@ app.index_string = f'''
 </html>
 '''
 
-# --- 5. LAYOUT DE LA APLICACIÓN (ARQUITECTURA "ESQUELETO") ---
+# --- 5. LAYOUT DE LA APLICACIÓN ---
 def crear_layout():
     # Carga inicial de datos (puede estar vacía al principio)
     # Esta carga inicial es la que consume RAM al arrancar.
     print(f"[{datetime.datetime.now()}] Iniciando crear_layout()...")
-
-    # --- NUEVA ARQUITECTURA ---
-    # NO LLAMAMOS a cargar_datos_crudos() aquí.
-    # Solo renderizamos un "esqueleto" vacío.
-    # Los datos se cargarán por el Callback 1 (update_global_data_store) 
-    # disparado por el dcc.Interval.
+    df_raw_global, df_metodos_expl_global, exchange_name_global = cargar_datos_crudos(days_to_load=DAYS_TO_LOAD) 
     
-    if ENGINE is None:
-        # Caso: Error fatal de conexión (esto se revisa al arrancar)
+    # Título dinámico
+    app_title = html.H1(f"Análisis de Mercado P2P: {exchange_name_global}")
+
+    if df_raw_global.empty and ENGINE is not None:
+        # Caso: BD conectada pero vacía
+        print(f"[{datetime.datetime.now()}] Layout: BD conectada pero sin datos recientes.")
+        return html.Div([
+            dcc.Store(id='store-raw-data'),
+            dcc.Store(id='store-methods-data'),
+            dcc.Interval(id='interval-data-refresh', interval=15 * 60 * 1000, n_intervals=0), # 15 minutos
+            html.H1("Estado de la Base de Datos"),
+            html.P(f"La base de datos está conectada pero vacía. Esperando datos del Scraper (Worker).", style={'textAlign': 'center', 'color': COLOR_HIGHLIGHT})
+        ], className='container')
+    elif ENGINE is None:
+        # Caso: Error fatal de conexión
         print(f"[{datetime.datetime.now()}] Layout: ERROR CRÍTICO, sin engine de BD.")
         return html.Div([
             html.H1("ERROR CRÍTICO: CONEXIÓN A DB", style={'textAlign': 'center', 'color': 'red'}),
             html.P(f"La variable DATABASE_URL es incorrecta o el servidor no pudo conectar. Revisa la configuración de Render.", style={'textAlign': 'center', 'color': 'white'})
         ], className='container')
     else:
-        # --- Caso: Hay conexión, mostrar "esqueleto" ---
-        print(f"[{datetime.datetime.now()}] Layout: Renderizando esqueleto de la app...")
+        # --- Caso: Hay datos, mostrar layout completo ---
+        print(f"[{datetime.datetime.now()}] Layout: Procesando datos iniciales...")
+        # Procesar datos iniciales
+        df_ohlc_demanda_global, df_ohlc_oferta_global = crear_datos_ohlc(df_raw_global, DEFAULT_INTERVAL)
         
-        app_title = html.H1(f"Análisis de Mercado P2P")
+        # --- Fix para DataFrames vacíos ---
+        if df_ohlc_demanda_global.empty and df_ohlc_oferta_global.empty:
+            fecha_inicio_inicial, fecha_fin_inicial = datetime.datetime.now(), datetime.datetime.now()
+            figura_principal_inicial = _crear_grafico_vacio(f"No hay datos para el intervalo {DEFAULT_INTERVAL}")
+        else:
+            figura_principal_inicial = crear_figura_velas(df_ohlc_demanda_global, df_ohlc_oferta_global, DEFAULT_INTERVAL)
+            min_d = df_ohlc_demanda_global.index.min() if not df_ohlc_demanda_global.empty else pd.Timestamp.max
+            min_o = df_ohlc_oferta_global.index.min() if not df_ohlc_oferta_global.empty else pd.Timestamp.max
+            max_d = df_ohlc_demanda_global.index.max() if not df_ohlc_demanda_global.empty else pd.Timestamp.min
+            max_o = df_ohlc_oferta_global.index.max() if not df_ohlc_oferta_global.empty else pd.Timestamp.min
+            fecha_inicio_inicial = min(min_d, min_o)
+            fecha_fin_inicial = max(max_d, max_o)
+            
+        figura_premium_inicial = crear_grafico_premium(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        figura_flujo_inicial = crear_grafico_flujo(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        figura_tendencia_inicial = crear_grafico_tendencia(df_metodos_expl_global, fecha_inicio_inicial, fecha_fin_inicial)
+        texto_fecha_inicial = crear_texto_rango_fechas(fecha_inicio_inicial, fecha_fin_inicial)
         
-        # Figuras vacías iniciales
-        figura_vacia_principal = _crear_grafico_vacio("Cargando datos...")
-        figura_vacia_avanzada = _crear_grafico_vacio("Cargando...")
-        texto_fecha_inicial = html.Span("Cargando rango de fechas...")
-
+        print(f"[{datetime.datetime.now()}] Layout: Renderización completada.")
+        
         return html.Div([
             # --- Almacenes de Datos y Temporizador ---
             dcc.Store(id='store-raw-data'),
             dcc.Store(id='store-methods-data'),
+            dcc.Interval(id='interval-data-refresh', interval=15 * 60 * 1000, n_intervals=0), # 15 minutos
             
-            # Este dcc.Interval es la CLAVE.
-            # Se dispara 1 segundo después de cargar la página (para no ser tan brusco)
-            # y luego cada 15 minutos.
-            dcc.Interval(
-                id='interval-data-refresh', 
-                interval=15 * 60 * 1000, # 15 minutos
-                n_intervals=0,
-                # max_intervals=-1 # (default) se repite infinitamente
-            ),
-            
-            app_title,
+            app_title, # ¡Título actualizado!
             
             # --- Selector de Intervalo (Global) ---
             html.Div(className='interval-selector', children=[
@@ -469,7 +477,7 @@ def crear_layout():
             # --- Contenedor del Gráfico Principal ---
             dcc.Graph(
                 id='grafico-principal', 
-                figure=figura_vacia_principal,
+                figure=figura_principal_inicial,
                 config={'scrollZoom': True}
             ),
             
@@ -486,11 +494,11 @@ def crear_layout():
                         html.B("💳 Análisis Avanzado de Métodos de Pago"),
                     ),
                     html.Div(className='graph-container', children=[
-                        dcc.Graph(id='grafico-metodos-premium', figure=figura_vacia_avanzada, config={'scrollZoom': True}),
+                        dcc.Graph(id='grafico-metodos-premium', figure=figura_premium_inicial, config={'scrollZoom': True}),
                         html.Hr(className='graph-separator'),
-                        dcc.Graph(id='grafico-metodos-flujo', figure=figura_vacia_avanzada, config={'scrollZoom': True}),
+                        dcc.Graph(id='grafico-metodos-flujo', figure=figura_flujo_inicial, config={'scrollZoom': True}),
                         html.Hr(className='graph-separator'),
-                        dcc.Graph(id='grafico-metodos-tendencia', figure=figura_vacia_avanzada, config={'scrollZoom': True})
+                        dcc.Graph(id='grafico-metodos-tendencia', figure=figura_tendencia_inicial, config={'scrollZoom': True})
                     ])
                 ]
             ),
@@ -504,44 +512,33 @@ print(f"[{datetime.datetime.now()}] Asignación de layout completada.")
 
 # --- 6. CALLBACKS (¡OPTIMIZADOS CON DCC.STORE!) ---
 
-# --- CALLBACK 1: Carga de Datos (Disparado por el Interval) ---
+# --- CALLBACK 1: Carga de Datos (Lento, se ejecuta cada 15 min) ---
 @app.callback(
     Output('store-raw-data', 'data'),
     Output('store-methods-data', 'data'),
-    Output('app-title', 'children'), # <-- NUEVO OUTPUT para actualizar el título
     Input('interval-data-refresh', 'n_intervals')
 )
 def update_global_data_store(n):
     """
-    Este callback se ejecuta en segundo plano (disparado por el Interval)
+    Este callback se ejecuta en segundo plano cada 15 minutos (o al cargar la página).
     Lee de la base de datos (lento) y guarda los datos en dcc.Store (rápido).
     """
     print(f"[{datetime.datetime.now()}] CALLBACK 1: Actualizando store de datos (Intervalo {n})...")
-    
-    # Solo queremos que los datos se carguen al inicio (n=0) y luego cada 15 min.
-    # Pero si el usuario cambia el intervalo (ej. 15T a 1H), este callback NO se activa.
-    # Eso es bueno, porque los datos crudos (store) no necesitan cambiar.
-    
     df_raw, df_metodos_expl, exchange_name = cargar_datos_crudos(days_to_load=DAYS_TO_LOAD)
     
     if df_raw.empty:
         print(f"[{datetime.datetime.now()}] CALLBACK 1: No se cargaron datos, no se actualiza el store.")
-        # Aún así actualizamos el título para que no se quede "Cargando"
-        titulo = f"Análisis de Mercado P2P: {exchange_name} (Sin datos recientes)"
         raise PreventUpdate
-    
-    # Título dinámico
-    titulo = f"Análisis de Mercado P2P: {exchange_name}"
 
     # Convertir a JSON para guardar en dcc.Store
     json_raw = df_raw.to_json(orient='split', date_format='iso')
     json_methods = df_metodos_expl.to_json(orient='split', date_format='iso')
     
     print(f"[{datetime.datetime.now()}] CALLBACK 1: Store de datos actualizado con {len(df_raw)} registros.")
-    return json_raw, json_methods, titulo
+    return json_raw, json_methods
 
 
-# --- CALLBACK 2: Actualización de Gráficos (Disparado por Stores y Clics) ---
+# --- CALLBACK 2: Actualización de Gráficos (Rápido, se ejecuta en cada clic) ---
 @app.callback(
     Output('grafico-principal', 'figure'),
     Output('grafico-metodos-premium', 'figure'),
@@ -549,27 +546,23 @@ def update_global_data_store(n):
     Output('grafico-metodos-tendencia', 'figure'),
     Output('output-rango-fecha', 'children'),
     # --- Inputs que disparan el callback ---
-    Input('store-raw-data', 'data'),         # <-- LEE DEL ALMACÉN (Disparador principal)
+    Input('store-raw-data', 'data'),         # <-- LEE DEL ALMACÉN
     Input('store-methods-data', 'data'),   # <-- LEE DEL ALMACÉN
-    Input('tabs-grafico-principal', 'value'), # (Disparador secundario)
-    Input('interval-selector', 'value'),      # (Disparador secundario)
-    Input('grafico-principal', 'relayoutData') # (Disparador de Zoom/Pan)
+    Input('tabs-grafico-principal', 'value'), 
+    Input('interval-selector', 'value'),      
+    Input('grafico-principal', 'relayoutData') 
 )
 def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relayout_data):
     """
-    Este callback se ejecuta CADA VEZ que el store se actualiza O el usuario hace clic.
+    Este callback se ejecuta cada vez que el usuario hace clic.
     NO lee de la base de datos, lee de dcc.Store (rápido).
     """
     
     # Si los datos aún no se han cargado (ej. al inicio), no hacer nada
     if not json_raw or not json_methods:
         print(f"[{datetime.datetime.now()}] CALLBACK 2: Esperando datos del store...")
-        # Devuelve figuras vacías si los stores aún no están listos
-        fig_vacia = _crear_grafico_vacio("Cargando datos...")
-        texto_vacio = html.Span("Cargando...")
-        return fig_vacia, fig_vacia, fig_vacia, fig_vacia, texto_vacio
+        raise PreventUpdate
 
-    print(f"[{datetime.datetime.now()}] CALLBACK 2: Actualizando gráficos...")
     # Convertir JSON de vuelta a DataFrame (Esto es rápido y en memoria)
     df_raw_global = pd.read_json(json_raw, orient='split')
     df_metodos_expl_global = pd.read_json(json_methods, orient='split')
@@ -591,10 +584,8 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
 
     # 2. Determinar el rango de fechas a mostrar
     if trigger_id_prop == 'grafico-principal' and 'xaxis.range[0]' in (relayout_data or {}):
-        # El usuario hizo zoom o pan
         fecha_inicio, fecha_fin = obtener_rango_fechas_del_grafico(relayout_data, df_demanda_ohlc)
     else:
-        # La página cargó (stores) o el usuario cambió un tab/intervalo
         if df_demanda_ohlc.empty and df_oferta_ohlc.empty: # Seguridad si el resample no da datos
              return (_crear_grafico_vacio(f"No hay datos para el intervalo {interval_value}"),) * 4 + (html.Span("Datos insuficientes..."),)
         
@@ -623,5 +614,27 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
         elif tab_value == 'tab-velas':
             fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-spread':
-            fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_v)
+            fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_value)
+        elif tab_value == 'tab-burbuja':
+            fig_principal = crear_figura_burbuja(df_demanda_ohlc, df_oferta_ohlc, interval_value)
+        else:
+            fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value) # Fallback
 
+    # 4. Crear los gráficos avanzados (Siempre se actualizan con el rango de zoom/pan)
+    fig_premium = crear_grafico_premium(df_metodos_expl_global, fecha_inicio, fecha_fin)
+    fig_flujo = crear_grafico_flujo(df_metodos_expl_global, fecha_inicio, fecha_fin)
+    fig_tendencia = crear_grafico_tendencia(df_metodos_expl_global, fecha_inicio, fecha_fin)
+    
+    # 5. Crear el texto de la fecha
+    texto_fecha = crear_texto_rango_fechas(fecha_inicio, fecha_fin)
+    
+    return fig_principal, fig_premium, fig_flujo, fig_tendencia, texto_fecha
+
+# --- 7. EJECUCIÓN ---
+if __name__ == '__main__':
+    # Esto solo se usa para pruebas locales, Render usará gunicorn
+    if ENGINE:
+        print(f"[{datetime.datetime.now()}] Iniciando servidor de prueba local en http://127.0.0.1:8050")
+        app.run_server(debug=True, host='0.0.0.0', port=8050)
+    else:
+        print(f"[{datetime.datetime.now()}] No se pudo iniciar el servidor. Revisa la conexión a la base de datos.")
