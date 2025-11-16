@@ -1,8 +1,8 @@
 import requests
 import pandas as pd
 from sqlalchemy import create_engine, text, inspect, Column, Integer, String, Float, DateTime, Text
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+# Corrección de importación para SQLAlchemy 2.0
+from sqlalchemy.orm import sessionmaker, declarative_base 
 import time
 import datetime
 import os
@@ -24,10 +24,12 @@ except Exception as e:
     print(f"[{datetime.datetime.now()}] ERROR FATAL: No se pudo crear engine de SQLAlchemy: {e}")
     sys.exit(1)
 
+# Ajuste para SQLAlchemy 2.0
 Base = declarative_base()
 TABLE_NAME = 'p2p_anuncios'
 
 # --- DEFINICIÓN DEL MODELO DE LA TABLA ---
+# (Este modelo no cambia, es compatible con ambos scrapers)
 class Anuncio(Base):
     __tablename__ = TABLE_NAME
     id = Column(Integer, primary_key=True)
@@ -50,7 +52,6 @@ def inicializar_base_de_datos():
                 Base.metadata.create_all(ENGINE)
                 print(f"[{datetime.datetime.now()}] Tabla '{TABLE_NAME}' creada con éxito.")
                 
-                # Intentar crear el índice de Timestamp inmediatamente
                 print(f"[{datetime.datetime.now()}] Creando índice 'idx_timestamp' en la nueva tabla...")
                 sql_command = text(f'CREATE INDEX IF NOT EXISTS idx_timestamp ON {TABLE_NAME} ("Timestamp");')
                 connection.execute(sql_command)
@@ -61,97 +62,69 @@ def inicializar_base_de_datos():
     except Exception as e:
         print(f"[{datetime.datetime.now()}] ERROR durante la inicialización de la BD: {e}")
 
-# --- CLASE PRINCIPAL DEL SCRAPER ---
+# --- CLASE PRINCIPAL DEL SCRAPER (ADAPTADA A BINANCE) ---
 class ScraperP2P:
     def __init__(self, engine):
-        self.base_url = "https://api.p2p.co/api/v1/otc/market-order"
+        # --- ¡ESTA ES LA API CORRECTA DE BINANCE! ---
+        self.base_url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
         self.session_db = sessionmaker(bind=engine)()
         self.total_registros_sesion = 0
-        self.exchange_name = "ElDorado" # Nombre por defecto
-
-    def _obtener_precio_base(self, tipo_anuncio):
-        """Obtiene el precio de referencia para el filtro."""
-        try:
-            params = {
-                "currency": "USDT",
-                "paymentCurrency": "VES",
-                "side": "BUY" if tipo_anuncio == "Demanda" else "SELL",
-                "paymentMethodIds": [],
-                "size": 1,
-                "page": 1
-            }
-            response = requests.get(self.base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if data and data['result'] and data['result']['list']:
-                precio_base = float(data['result']['list'][0]['price'])
-                # Intentar obtener el nombre de la exchange
-                if 'exchangeName' in data['result']['list'][0]:
-                    self.exchange_name = data['result']['list'][0]['exchangeName']
-                return precio_base
-        except requests.RequestException as e:
-            print(f"<i>[!] Advertencia: No se pudo obtener el precio base. {e}</i>")
-        return None
-
-    def _aplicar_filtro_inteligente(self, precio_base, tipo_anuncio):
-        """Devuelve el rango de precios aceptable."""
-        if precio_base is None:
-            return None, None
+        self.exchange_name = "Binance" # Nombre correcto
         
-        # Rango de filtro (ej. 12%)
-        rango = 0.12 
-        if tipo_anuncio == "Demanda":
-            precio_min = precio_base * (1 - rango)
-            precio_max = precio_base * (1 + rango)
-        else: # Oferta
-            precio_min = precio_base * (1 - rango)
-            precio_max = precio_base * (1 + rango)
-        return precio_min, precio_max
+        # --- HEADERS ESENCIALES PARA BINANCE ---
+        # Binance bloquea peticiones sin un User-Agent (como las de Render)
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+            'Content-Type': 'application/json',
+            'Accept': '*/*',
+            'Host': 'p2p.binance.com',
+            'Origin': 'https://p2p.binance.com'
+        }
 
     def obtener_anuncios(self, tipo_anuncio):
-        """Obtiene y filtra los anuncios de la API."""
-        print(f"  → Obteniendo datos de {tipo_anuncio}...")
-        side = "BUY" if tipo_anuncio == "Demanda" else "SELL"
+        """Obtiene y filtra los anuncios de la API de Binance."""
+        print(f"  → Obteniendo datos de {tipo_anuncio} (Binance)...")
         
-        precio_base = self._obtener_precio_base(tipo_anuncio)
-        p_min, p_max = self._aplicar_filtro_inteligente(precio_base, tipo_anuncio)
+        # El "side" en la API de Binance es "tradeType"
+        trade_type = "BUY" if tipo_anuncio == "Demanda" else "SELL"
         
-        if p_min is None:
-            print(f"<i>[!] No se pudo aplicar filtro para {tipo_anuncio}. Saltando...</i>")
-            return [], 0
-            
-        print(f"<i>   <i-> Precio base ({tipo_anuncio}): {precio_base:.2f}. Rango aceptado: ({p_min:.2f} - {p_max:.2f})</i>")
-
-        params = {
-            "currency": "USDT",
-            "paymentCurrency": "VES",
-            "side": side,
-            "paymentMethodIds": [],
-            "size": 200, # Pedimos 200 para tener un buen set de datos
-            "page": 1
+        # --- PAYLOAD PARA LA PETICIÓN POST DE BINANCE ---
+        payload = {
+            "asset": "USDT",
+            "fiat": "VES",
+            "merchantCheck": False, # No incluir solo comerciantes
+            "page": 1,
+            "rows": 20, # 20 es el máximo de la API "friendly"
+            "tradeType": trade_type,
+            "payTypes": [], # Todos los métodos de pago
         }
         
         try:
-            response = requests.get(self.base_url, params=params, timeout=10)
-            response.raise_for_status()
+            with requests.Session() as s:
+                # --- ¡ES UN POST, NO UN GET! ---
+                response = s.post(self.base_url, headers=self.headers, json=payload, timeout=10)
+            
+            response.raise_for_status() # Lanza error si la respuesta es 4xx o 5xx
             data = response.json()
             
-            anuncios_filtrados = []
-            if data and data['result'] and data['result']['list']:
+            anuncios_guardar = []
+            
+            # La respuesta de Binance tiene un formato específico
+            if data and data.get('success') and data.get('data'):
                 timestamp = datetime.datetime.now()
                 
-                for item in data['result']['list']:
+                for item in data['data']:
                     try:
-                        precio = float(item['price'])
+                        # Los datos del anuncio están en el sub-diccionario 'adv'
+                        adv = item['adv']
                         
-                        # El filtro de precios
-                        if not (p_min <= precio <= p_max):
-                            continue # El precio está fuera de rango, lo ignoramos
-
-                        volumen = float(item['amount'])
-                        volumen_min = float(item['minLimit'])
-                        volumen_max = float(item['maxLimit'])
-                        metodos_pago_lista = [pm['paymentMethodName'] for pm in item.get('paymentMethods', [])]
+                        precio = float(adv['price'])
+                        volumen = float(adv['surplusAmount']) # 'surplusAmount' es el volumen disponible
+                        volumen_min = float(adv['minSingleTransAmount'])
+                        volumen_max = float(adv['maxSingleTransAmount'])
+                        
+                        # Extraer métodos de pago
+                        metodos_pago_lista = [pm['payType'] for pm in adv.get('tradeMethods', []) if pm.get('payType')]
                         metodos_pago_str = ', '.join(metodos_pago_lista)
 
                         anuncio_obj = Anuncio(
@@ -162,20 +135,24 @@ class ScraperP2P:
                             Volumen_min=volumen_min,
                             Volumen_max=volumen_max,
                             Metodos_Pago=metodos_pago_str,
-                            Exchange_Name=self.exchange_name
+                            Exchange_Name=self.exchange_name # Guardamos "Binance"
                         )
-                        anuncios_filtrados.append(anuncio_obj)
-                    except (ValueError, TypeError) as e:
-                        print(f"<i>   [!] Error procesando un anuncio: {e}. Saltando...</i>")
+                        anuncios_guardar.append(anuncio_obj)
+                    except (ValueError, TypeError, KeyError) as e:
+                        print(f"<i>   [!] Error procesando un anuncio de Binance: {e}. Saltando...</i>")
                         
-                print(f"<i>   <i> Anuncios de {tipo_anuncio} recolectados: {len(anuncios_filtrados)}</i>")
-                return anuncios_filtrados, len(anuncios_filtrados)
+                print(f"<i>   <i> Anuncios de {tipo_anuncio} recolectados: {len(anuncios_guardar)}</i>")
+                return anuncios_guardar, len(anuncios_guardar)
+            
             else:
-                print(f"<i>   <i> No se encontraron anuncios de {tipo_anuncio}.</i>")
+                print(f"<i>   <i> No se encontraron anuncios de {tipo_anuncio} o la respuesta no fue exitosa.</i>")
                 return [], 0
                 
         except requests.RequestException as e:
-            print(f"<i>   [!] Error de red obteniendo {tipo_anuncio}: {e}</i>")
+            print(f"<i>   [!] Error de red obteniendo {tipo_anuncio} (Binance): {e}</i>")
+            return [], 0
+        except Exception as e:
+            print(f"<i>   [!] Error inesperado en obtener_anuncios (Binance): {e}</i>")
             return [], 0
 
     def guardar_en_db(self, anuncios):
@@ -188,6 +165,8 @@ class ScraperP2P:
         except Exception as e:
             print(f"<i>[!] Error al guardar en BD: {e}</i>")
             self.session_db.rollback()
+        finally:
+            self.session_db.close() # Cerrar sesión después de cada ciclo
 
     def ejecutar_ciclo(self):
         """Ejecuta un ciclo completo de recolección."""
@@ -202,7 +181,11 @@ class ScraperP2P:
         total_nuevos = count_d + count_o
         self.total_registros_sesion += total_nuevos
         
-        print(f"  📊 \x1b[1;32m¡Éxito! {total_nuevos} nuevos registros añadidos a la BD.\x1b[0m")
+        if total_nuevos > 0:
+            print(f"  📊 \x1b[1;32m¡Éxito! {total_nuevos} nuevos registros añadidos a la BD.\x1b[0m")
+        else:
+            print(f"  📊 ¡Éxito! {total_nuevos} nuevos registros añadidos a la BD.")
+            
         print(f"  ⭐ Total acumulado en esta sesión: {self.total_registros_sesion} registros.")
         print(f"-----------------------------------------------------------------")
 
