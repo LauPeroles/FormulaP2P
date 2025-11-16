@@ -1,14 +1,14 @@
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# --- IMPORTACIONES NECESARIAS ---
+# --- IMPORTACIONES CORREGIDAS ---
 from dash import Dash, html, dcc, callback_context, Input, Output, State
 import datetime
 from dash.exceptions import PreventUpdate 
+# --- LÍNEA CORREGIDA (de 'sqlalchzemy') ---
 from sqlalchemy import create_engine 
 import os
-# Ya no necesitamos relativedelta porque no cargamos por tiempo
-# from dateutil.relativedelta import relativedelta 
+from dateutil.relativedelta import relativedelta # Esta línea necesita 'python-dateutil'
 
 # --- CONFIGURACIÓN DE BASE DE DATOS ---
 TABLE_NAME = 'p2p_anuncios'
@@ -25,10 +25,7 @@ except Exception as e:
     print(f"[{datetime.datetime.now()}] ERROR FATAL: No se pudo crear engine de SQLAlchemy: {e}")
     ENGINE = None
 
-# --- CONSTANTES DE LÍMITE Y COLOR ---
-LIMITE_REGISTROS_POR_TIPO = 50
-TOTAL_REGISTROS_A_CARGAR = LIMITE_REGISTROS_POR_TIPO * 2 # 100
-# (El resto de las constantes de color y formato se mantienen)
+# --- CONSTANTES DE COLOR ---
 COLOR_BACKGROUND_APP = '#0d0d0d'
 COLOR_CARD_BACKGROUND = '#1a1a1a'
 COLOR_BORDER = '#333333'
@@ -45,8 +42,15 @@ PALETA_METODOS = [
     '#1ABC9C', '#D35400', '#2C3E50', '#BDC3C7', '#7F8C8D'
 ]
 DEFAULT_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M'
-DEFAULT_INTERVAL = '1h' 
+
+# --- CORRECCIÓN DE WARNINGS DE PANDAS ('H' -> 'h') ---
+DEFAULT_INTERVAL = '1h' # '1H' está obsoleto
 DEFAULT_CHART_TYPE = 'tab-velas'
+
+# --- AJUSTE FINAL DE RAM ---
+# Límite de horas para la carga de datos.
+# Bajamos de 12 a 6 horas para el intento final.
+HOURS_TO_LOAD = 6
 
 # --- DEFINICIÓN DE ESTILOS CSS ---
 EXTERNAL_STYLESHEET = [
@@ -60,6 +64,7 @@ APP_CSS = f"""
         margin: 0; padding: 0;
     }}
     .container {{ max-width: 1400px; margin: 0 auto; padding: 20px; }}
+    /* 'app-title' es el ID de nuestro H1, para poder actualizarlo */
     h1#app-title {{
         font-weight: 700; font-size: 2.5em; margin-bottom: 5px;
         color: #FFFFFF; text-align: center; letter-spacing: 1px;
@@ -147,68 +152,68 @@ APP_CSS = f"""
     .radio-item label {{ color: rgba(255,255,255,0.8); font-weight: 400; }}
 """
 
-# --- 1. PROCESAMIENTO DE DATOS (¡OPTIMIZADO POR FILAS!) ---
+# --- 1. PROCESAMIENTO DE DATOS (¡OPTIMIZADO!) ---
 
-def cargar_datos_crudos(limit=LIMITE_REGISTROS_POR_TIPO):
+def cargar_datos_crudos(hours_to_load=HOURS_TO_LOAD):
     """
-    Carga los 50 últimos registros de Demanda y los 50 últimos de Oferta,
-    independientemente del tiempo. Esto minimiza el uso de RAM.
+    Carga datos desde PostgreSQL, limitando el histórico para ahorrar RAM.
     """
     if ENGINE is None:
         print(f"[{datetime.datetime.now()}] cargar_datos_crudos abortado: No hay conexión a DB.")
         return pd.DataFrame(), pd.DataFrame(), "P2P (Error)"
 
-    df_parts = []
-    
-    # --- Consulta 1: Últimos 50 de Demanda (Compra) ---
-    sql_query_demanda = f"""
-    (SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago", "Exchange_Name"
-    FROM {TABLE_NAME}
-    WHERE "Tipo" = 'Demanda'
-    ORDER BY "Timestamp" DESC
-    LIMIT {limit})
-    """
-    
-    # --- Consulta 2: Últimos 50 de Oferta (Venta) ---
-    sql_query_oferta = f"""
-    (SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago", "Exchange_Name"
-    FROM {TABLE_NAME}
-    WHERE "Tipo" = 'Oferta'
-    ORDER BY "Timestamp" DESC
-    LIMIT {limit})
-    """
-    
-    # Concatenamos las consultas con UNION ALL para traer todo en una llamada eficiente
-    sql_combined = f"{sql_query_demanda} UNION ALL {sql_query_oferta}"
-
-    print(f"[{datetime.datetime.now()}] Cargando {limit}x2 ({limit} de cada tipo) registros de la BD...")
-    
     try:
-        df_raw = pd.read_sql(sql_combined, con=ENGINE)
+        # --- CAMBIO A 6 HORAS ---
+        start_date = datetime.datetime.now() - relativedelta(hours=hours_to_load) 
+        start_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+
+        exchange_name = "P2P"
+        df_raw = pd.DataFrame()
+        
+        try:
+            sql_query = f"""
+            SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago", "Exchange_Name"
+            FROM {TABLE_NAME}
+            WHERE "Timestamp" >= '{start_date_str}'
+            ORDER BY "Timestamp"
+            """
+            print(f"[{datetime.datetime.now()}] Cargando datos (ÚLTIMAS {hours_to_load} HORAS): Desde {start_date_str}...")
+            df_raw = pd.read_sql(sql_query, con=ENGINE)
+            if not df_raw.empty and 'Exchange_Name' in df_raw.columns and not df_raw['Exchange_Name'].empty:
+                 first_valid_name = df_raw['Exchange_Name'].dropna().iloc[0]
+                 if first_valid_name:
+                     exchange_name = first_valid_name
+                 else:
+                     exchange_name = "P2P (Nombre no disp.)"
+
+        except Exception as e_col:
+            # Esto se ejecuta si la DB fue creada por el script de "reparación" (fix_db.py)
+            # que borró la tabla y el scraper aún no ha guardado la columna Exchange_Name.
+            print(f"[{datetime.datetime.now()}] Advertencia: Columna 'Exchange_Name' no encontrada. Reintentando sin ella. {e_col}")
+            sql_query_fallback = f"""
+            SELECT "Timestamp", "Tipo", "Precio", "Volumen", "Metodos_Pago"
+            FROM {TABLE_NAME}
+            WHERE "Timestamp" >= '{start_date_str}'
+            ORDER BY "Timestamp"
+            """
+            df_raw = pd.read_sql(sql_query_fallback, con=ENGINE)
+            exchange_name = "P2P (Fallback)" 
+
         
         if df_raw.empty:
-            print(f"[{datetime.datetime.now()}] No hay datos en el rango.")
-            return pd.DataFrame(), pd.DataFrame(), "P2P (Vacío)"
+            print(f"[{datetime.datetime.now()}] No hay datos recientes en el rango.")
+            return pd.DataFrame(), pd.DataFrame(), exchange_name
             
-        print(f"[{datetime.datetime.now()}] ✅ Cargados {len(df_raw)} registros totales. (¡Baja RAM!)")
+        print(f"[{datetime.datetime.now()}] ✅ Cargados {len(df_raw)} registros recientes.")
 
-        # Inferencia del nombre de la Exchange (Binance)
-        exchange_name = "P2P"
-        if 'Exchange_Name' in df_raw.columns and not df_raw['Exchange_Name'].empty:
-             first_valid_name = df_raw['Exchange_Name'].dropna().iloc[0]
-             if first_valid_name:
-                 exchange_name = first_valid_name
-
-        # Convertir tipos y limpiar
+        # Convertir tipos
         df_raw['Timestamp'] = pd.to_datetime(df_raw['Timestamp'])
         df_raw['Precio'] = pd.to_numeric(df_raw['Precio'], errors='coerce')
         df_raw['Volumen'] = pd.to_numeric(df_raw['Volumen'], errors='coerce')
         df_raw.dropna(subset=['Precio', 'Volumen'], inplace=True) 
 
-        # Ordenar por tiempo para el análisis (necesario ya que el UNION no garantiza orden)
-        df_raw.sort_values(by='Timestamp', inplace=True) 
-
-        # Procesar métodos de pago (Esto sigue siendo intensivo, pero con menos filas es manejable)
+        # Procesar métodos de pago
+        # Usamos .copy() para evitar SettingWithCopyWarning
         df_metodos = df_raw.copy() 
         df_metodos['Metodos_Pago'] = df_metodos['Metodos_Pago'].fillna('')
         df_metodos['Metodos_Pago'] = df_metodos['Metodos_Pago'].str.split(r',\s*')
@@ -223,9 +228,6 @@ def cargar_datos_crudos(limit=LIMITE_REGISTROS_POR_TIPO):
         print(f"[{datetime.datetime.now()}] ❌ ERROR de DB en cargar_datos_crudos: {e}")
         return pd.DataFrame(), pd.DataFrame(), "P2P (Error)"
 
-
-# --- FUNCIONES DE GRÁFICOS (SIN CAMBIOS) ---
-
 def crear_datos_ohlc(df_raw, interval):
     if df_raw.empty: return pd.DataFrame(), pd.DataFrame()
     df_raw_indexed = df_raw.set_index('Timestamp')
@@ -238,13 +240,15 @@ def crear_datos_ohlc(df_raw, interval):
     df_oferta.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
     return df_demanda, df_oferta
 
+# --- 2. CREACIÓN DE GRÁFICOS (Funciones de Visualización) ---
+
 def _crear_grafico_vacio(mensaje="Cargando datos..."):
     fig = go.Figure()
     fig.add_annotation(text=mensaje, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=16, color=COLOR_TEXT))
     fig.update_layout(height=350, template="plotly_dark", plot_bgcolor=COLOR_CARD_BACKGROUND, paper_bgcolor=COLOR_CARD_BACKGROUND, xaxis=dict(showgrid=False, zeroline=False, showticklabels=False), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
     return fig
 
-# VISTA 1: Estilo Trading (Velas)
+# --- VISTA 1: Estilo Trading (Velas) ---
 def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
     if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
         return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
@@ -260,7 +264,7 @@ def crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval):
     fig.update_xaxes(showticklabels=False, row=1, col=1)
     return fig
 
-# VISTA 2: Estilo Analítico (Área de Spread)
+# --- VISTA 2: Estilo Analítico (Área de Spread) ---
 def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
     if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
         return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
@@ -279,7 +283,7 @@ def crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval):
     fig.update_xaxes(showticklabels=False, row=1, col=1)
     return fig
 
-# VISTA 3: Estilo Moderno (Línea/Burbuja)
+# --- VISTA 3: Estilo Moderno (Línea/Burbuja) ---
 def crear_figura_burbuja(df_demanda_ohlc, df_oferta_ohlc, interval):
     if df_demanda_ohlc.empty and df_oferta_ohlc.empty:
         return _crear_grafico_vacio(f"No hay datos para el intervalo {interval}")
@@ -337,6 +341,7 @@ def crear_grafico_flujo(df_metodos_expl, fecha_inicio, fecha_fin):
 def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     if df_metodos_expl.empty: return _crear_grafico_vacio("No hay datos de métodos")
     
+    # --- CORRECCIÓN SETTINGWITHCOPYWARNING ---
     # Al filtrar, creamos una copia explícita con .copy()
     df_filtrado = df_metodos_expl[(df_metodos_expl['Timestamp'] >= fecha_inicio) & (df_metodos_expl['Timestamp'] <= fecha_fin)].copy()
     
@@ -345,13 +350,14 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     duration = fecha_fin - fecha_inicio
     duration_days = duration.total_seconds() / (24 * 60 * 60) 
     
-    # Intervalos en minúsculas
+    # --- CORRECCIÓN FUTUREWARNING ('H' -> 'h', 'D' -> 'd') ---
     if duration_days <= 2: interval, interval_label = '1h', "1 Hora"
     elif duration_days <= 14: interval, interval_label = '6h', "6 Horas"
     else: interval, interval_label = '1d', "1 Día"
         
     top_metodos = df_filtrado.groupby('Metodos_Pago')['Volumen'].sum().nlargest(7).index
     
+    # Esta es la línea que causaba el warning (336 aprox). Ahora es segura gracias al .copy() de arriba.
     df_filtrado['Metodo_Agrupado'] = df_filtrado['Metodos_Pago'].apply(lambda x: x if x in top_metodos else 'Otros')
     
     df_resampled = (df_filtrado.set_index('Timestamp').groupby('Metodo_Agrupado').resample(interval)['Volumen'].sum().unstack(level=0, fill_value=0))
@@ -364,7 +370,7 @@ def crear_grafico_tendencia(df_metodos_expl, fecha_inicio, fecha_fin):
     return fig
 
 
-# --- 3. FUNCIONES AUXILIARES (SIN CAMBIOS) ---
+# --- 3. FUNCIONES AUXILIARES ---
 
 def obtener_rango_fechas_del_grafico(relayout_data, df_ohlc_actual):
     if relayout_data is None or 'xaxis.range[0]' not in relayout_data:
@@ -378,18 +384,17 @@ def obtener_rango_fechas_del_grafico(relayout_data, df_ohlc_actual):
         return df_ohlc_actual.index.min(), df_ohlc_actual.index.max()
 
 def crear_texto_rango_fechas(fecha_inicio, fecha_fin):
-    # Ya que no cargamos por tiempo, mostramos el rango real de los 100 puntos
     return html.Span([
-        html.Span("RANGO DE DATOS: ", style={'color': 'white', 'fontWeight': '400'}),
+        html.Span("RANGO DE FECHA: ", style={'color': 'white', 'fontWeight': '400'}),
         html.Span(f"{fecha_inicio.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_COMPRA, 'fontWeight': '700'}),
         html.Span(" — ", style={'color': 'gray'}),
         html.Span(f"{fecha_fin.strftime(DEFAULT_TIMESTAMP_FORMAT)}", style={'color': COLOR_PRECIO_VENTA, 'fontWeight': '700'})
     ])
 
-# --- 4. INICIALIZACIÓN DE DASH (SIN CAMBIOS) ---
+# --- 4. INICIALIZACIÓN DE DASH ---
 
 app = Dash(__name__, external_stylesheets=EXTERNAL_STYLESHEET)
-server = app.server 
+server = app.server # Variable server para Gunicorn
 
 app.index_string = f'''
 <!DOCTYPE html>
@@ -412,7 +417,7 @@ app.index_string = f'''
 </html>
 '''
 
-# --- 5. LAYOUT DE LA APLICACIÓN (SIN CAMBIOS) ---
+# --- 5. LAYOUT DE LA APLICACIÓN (ARQUITECTURA "ESQUELETO") ---
 def crear_layout():
     print(f"[{datetime.datetime.now()}] Iniciando crear_layout() (Modo Esqueleto)...")
 
@@ -427,7 +432,7 @@ def crear_layout():
         app_title = html.H1(f"Análisis de Mercado P2P", id='app-title') 
         figura_vacia_principal = _crear_grafico_vacio("Cargando datos...")
         figura_vacia_avanzada = _crear_grafico_vacio("Cargando...")
-        texto_fecha_inicial = html.Span("Cargando rango de datos...")
+        texto_fecha_inicial = html.Span("Cargando rango de fechas...")
 
         return html.Div([
             dcc.Store(id='store-raw-data'),
@@ -451,6 +456,7 @@ def crear_layout():
             html.Div(className='interval-selector', children=[
                 dcc.RadioItems(
                     id='interval-selector',
+                    # --- CORRECCIÓN FUTUREWARNING ('H' -> 'h', 'D' -> 'd') ---
                     options=[
                         {'label': '15 Minutos', 'value': '15t', 'className': 'radio-item'},
                         {'label': '1 Hora', 'value': '1h', 'className': 'radio-item'},
@@ -501,9 +507,9 @@ print(f"[{datetime.datetime.now()}] Asignando crear_layout a app.layout...")
 app.layout = crear_layout
 print(f"[{datetime.datetime.now()}] Asignación de layout completada.")
 
-# --- 6. CALLBACKS (SIN CAMBIOS DE LÓGICA) ---
+# --- 6. CALLBACKS (¡OPTIMIZADOS CON DCC.STORE!) ---
 
-# CALLBACK 1: Carga de Datos (Llama a la nueva función optimizada)
+# --- CALLBACK 1: Carga de Datos (Disparado por los Intervals) ---
 @app.callback(
     Output('store-raw-data', 'data'),
     Output('store-methods-data', 'data'),
@@ -519,8 +525,8 @@ def update_global_data_store(n_initial, n_refresh):
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
     print(f"[{datetime.datetime.now()}] CALLBACK 1: Actualizando store (Disparado por: {trigger_id})...")
     
-    # --- LLAMA A LA NUEVA FUNCIÓN OPTIMIZADA POR FILAS ---
-    df_raw, df_metodos_expl, exchange_name = cargar_datos_crudos(limit=LIMITE_REGISTROS_POR_TIPO)
+    # --- CAMBIO A 6 HORAS ---
+    df_raw, df_metodos_expl, exchange_name = cargar_datos_crudos(hours_to_load=HOURS_TO_LOAD)
     
     titulo = f"Análisis de Mercado P2P: {exchange_name}"
 
@@ -538,7 +544,7 @@ def update_global_data_store(n_initial, n_refresh):
     return json_raw, json_methods, titulo
 
 
-# CALLBACK 2: Actualización de Gráficos
+# --- CALLBACK 2: Actualización de Gráficos (Disparado por Stores y Clics) ---
 @app.callback(
     Output('grafico-principal', 'figure'),
     Output('grafico-metodos-premium', 'figure'),
@@ -616,7 +622,7 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
     
     return fig_principal, fig_premium, fig_flujo, fig_tendencia, texto_fecha
 
-# --- 7. EJECUCIÓN (SIN CAMBIOS) ---
+# --- 7. EJECUCIÓN ---
 if __name__ == '__main__':
     if ENGINE:
         print(f"[{datetime.datetime.now()}] Iniciando servidor de prueba local en http://127.0.0.1:8050")
