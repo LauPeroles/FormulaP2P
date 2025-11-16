@@ -6,7 +6,6 @@ import os
 import datetime
 
 # --- CONFIGURACIÓN DE BASE DE DATOS (Lee la variable de entorno de Render) ---
-# En Render, esta variable de entorno es seteada automáticamente por el dashboard.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if not DATABASE_URL:
@@ -18,7 +17,6 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 try:
-    # Crear el motor de conexión a la base de datos
     ENGINE = create_engine(DATABASE_URL)
     print("[INSPECTOR DB] Engine de SQLAlchemy creado con la URL interna.")
 except Exception as e:
@@ -28,16 +26,17 @@ except Exception as e:
 TABLE_NAME = 'p2p_anuncios' 
 
 # --- APLICACIÓN DASH ---
-# Usaremos un tema oscuro para un look de herramienta de administración
 COLOR_BG = '#282c34'
 COLOR_CARD = '#333742'
 COLOR_TEXT = '#ffffff'
 COLOR_ACCENT = '#00cc96' # Un verde neón para acentuar
 
 app = dash.Dash(__name__)
-server = app.server # Necesario para el despliegue con Gunicorn en Render
+server = app.server 
 
-app.layout = html.Div(style={'fontFamily': 'Roboto, sans-serif', 'padding': '20px', 'backgroundColor': COLOR_BG, 'minHeight': '100vh', 'color': COLOR_TEXT})(children=[
+# --- CORRECCIÓN DE SINTAXIS EN app.layout ---
+# El error era un paréntesis extra al final de la primera línea de html.Div()
+app.layout = html.Div(style={'fontFamily': 'Roboto, sans-serif', 'padding': '20px', 'backgroundColor': COLOR_BG, 'minHeight': '100vh', 'color': COLOR_TEXT}, children=[
     html.H1("Inspector de Base de Datos P2P", style={'textAlign': 'center', 'color': COLOR_TEXT}),
     html.P("Esta herramienta se conecta internamente a la base de datos y muestra los 50 registros más recientes.", style={'textAlign': 'center', 'color': '#ccc'}),
     html.P("Si ves datos aquí, confirma que el scraper está funcionando correctamente.", style={'textAlign': 'center', 'color': COLOR_ACCENT, 'fontWeight': 'bold'}),
@@ -107,6 +106,5 @@ def update_table(n_clicks):
         print(f"[{datetime.datetime.now()}] [INSPECTOR] ERROR: {e}")
         return [], [], error_message
 
-# Punto de entrada si se ejecuta directamente, aunque Render usa gunicorn
 if __name__ == '__main__':
     app.run_server(debug=True, host='0.0.0.0', port=os.environ.get('PORT', 8050))
