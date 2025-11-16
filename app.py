@@ -623,4 +623,5 @@ def actualizar_graficos(json_raw, json_methods, tab_value, interval_value, relay
         elif tab_value == 'tab-velas':
             fig_principal = crear_figura_velas(df_demanda_ohlc, df_oferta_ohlc, interval_value)
         elif tab_value == 'tab-spread':
-            fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_v
+            fig_principal = crear_figura_spread(df_demanda_ohlc, df_oferta_ohlc, interval_v)
+
